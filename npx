@@ -1,0 +1,28 @@
+> "create-vite" frontend --template react
+
+│
+◇  Install with npm and start now?
+│  Yes
+│
+◇  Scaffolding project in /Users/1di/order_system_automatition/frontend...
+│
+◇  Installing dependencies with npm...
+
+added 151 packages, and audited 152 packages in 18s
+
+36 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+│
+◇  Starting dev server...
+
+> frontend@0.0.0 dev
+> vite
+
+
+  VITE v8.0.8  ready in 451 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: use --host to expose
+  ➜  press h + enter to show help

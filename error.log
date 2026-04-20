@@ -1,0 +1,49 @@
+1di@MacBook-Pro-de-Juan order_system_automatition % firebase deploy --only functions --project orders-bf760 2>&1
+
+=== Deploying to 'orders-bf760'...
+
+i  deploying functions
+i  functions: preparing codebase default for deployment
+i  functions: ensuring required API cloudfunctions.googleapis.com is enabled...
+i  functions: ensuring required API cloudbuild.googleapis.com is enabled...
+i  artifactregistry: ensuring required API artifactregistry.googleapis.com is enabled...
+i  functions: Loading and analyzing source code for codebase default to determine what to deploy
+(node:20094) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+ * Serving Flask app 'serving'
+ * Debug mode: off
+
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on http://127.0.0.1:8081
+
+Press CTRL+C to quit
+
+127.0.0.1 - - [20/Apr/2026 17:16:04] "GET /__/functions.yaml HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [20/Apr/2026 17:16:04] "GET /__/functions.yaml HTTP/1.1" 200 -
+
+127.0.0.1 - - [20/Apr/2026 17:16:04] "GET /__/quitquitquit HTTP/1.1" 200 -
+
+INFO:werkzeug:127.0.0.1 - - [20/Apr/2026 17:16:04] "GET /__/quitquitquit HTTP/1.1" 200 -
+
+/bin/sh: line 1: 20102 Terminated: 15          python3.11 "/Users/1di/order_system_automatition/functions/venv/lib/python3.11/site-packages/firebase_functions/private/serving.py"
+
+i  functions: preparing functions directory for uploading...
+i  functions: packaged /Users/1di/order_system_automatition/functions (79.27 KB) for uploading
+i  functions: ensuring required API cloudscheduler.googleapis.com is enabled...
+i  functions: ensuring required API run.googleapis.com is enabled...
+i  functions: ensuring required API eventarc.googleapis.com is enabled...
+i  functions: ensuring required API pubsub.googleapis.com is enabled...
+i  functions: ensuring required API storage.googleapis.com is enabled...
+i  functions: generating the service identity for pubsub.googleapis.com...
+i  functions: generating the service identity for eventarc.googleapis.com...
+✔  functions: functions source uploaded successfully
+i  functions: updating Python 3.11 (2nd Gen) function process_stephen_orders(us-central1)...
+Build failed with status: FAILURE. Could not build the function due to a missing permission on the build service account. If you didn't revoke that permission explicitly, this could be caused by a change in the organization policies. Please refer to the following documentation for more details and resolution: https://cloud.google.com/functions/docs/troubleshooting#build-service-account
+ You can also view the logs at https://console.cloud.google.com/cloud-build/builds;region=us-central1/245c8b12-8d15-4511-83aa-6df526d9dbd6?project=655543086602.
+
+
+Functions deploy had errors with the following functions:
+        process_stephen_orders(us-central1)
+
+Error: There was an error deploying functions
+1di@MacBook-Pro-de-Juan order_system_automatition % 
