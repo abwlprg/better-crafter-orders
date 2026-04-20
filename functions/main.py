@@ -21,10 +21,10 @@ from word_generator import WordReportGenerator
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-GMAIL_REFRESH_TOKEN = "1//0h_I837GLG6RzCgYIARAAGBESNwF-L9IrtDiBBSzW3vJoId8Y9oj9GjKiF_clWU4usKlE9BvOfAjFSHlNI1tSsm5INyuqnczlUqc"
-GMAIL_CLIENT_ID = "706034452884-8u5fq9rsmb33o52ltj5qp4gnv668v2gl.apps.googleusercontent.com"
-GMAIL_CLIENT_SECRET = "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"
-GEMINI_API_KEY = "AIzaSyDnOxQsXrB1JaJeQ3BeEpijM6w2Fb6hHqQ"
+GMAIL_REFRESH_TOKEN = os.environ.get("GMAIL_REFRESH_TOKEN", "")
+GMAIL_CLIENT_ID = os.environ.get("GMAIL_CLIENT_ID", "")
+GMAIL_CLIENT_SECRET = os.environ.get("GMAIL_CLIENT_SECRET", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 if not firebase_admin._apps:
     if config.STORAGE_BUCKET:
