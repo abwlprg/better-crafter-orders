@@ -1,5 +1,10 @@
-.env
-client_secret_*.json
+functions/venv/
 __pycache__/
 *.pyc
-.pytest_cache/
+.env
+*.log
+node_modules/
+frontend/node_modules/
+test_output/
+*.docx
+client_secret_*.json
