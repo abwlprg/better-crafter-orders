@@ -148,20 +148,24 @@ class GmailClient:
     def _build_search_query(supplier_email: str, hours_back: int) -> str:
         """Build Gmail query for orders sent BY us TO a supplier, with our inbox in BCC.
 
-        Strategy:
-        - Ben sends orders to a supplier (e.g. Stephen at 7173783020@hellofax.com)
-        - Ben puts bettercrafter1@gmail.com in BCC so we capture them
-        - We filter `to:supplier_email` so we only get orders for that specific supplier
-          (parsing format varies per supplier, so we process one at a time)
+        HARDCODED defaults (no env vars needed):
+        - Inbox: bettercrafter1@gmail.com (BCC'd on every order)
+        - Supplier: passed in as parameter (Stephen = 7173783020@hellofax.com)
         """
         days = max(1, math.ceil(hours_back / 24))
-        inbox_account = os.environ.get("GMAIL_ACCOUNT", "bettercrafter1@gmail.com")
-        return (
+        inbox_account = "bettercrafter1@gmail.com"
+        query = (
             f"deliveredto:{inbox_account} "
             f"to:{supplier_email} "
             f"has:attachment filename:pdf "
             f"newer_than:{days}d"
         )
+        logger.info("  🛠️  Building query:")
+        logger.info("       inbox    = %s", inbox_account)
+        logger.info("       supplier = %s", supplier_email)
+        logger.info("       window   = %d days (from %d hours_back)", days, hours_back)
+        logger.info("       full q   = %s", query)
+        return query
 
     def _execute_with_retry(self, operation: str, func: Callable[[], Any]) -> Any:
         """Execute Gmail API call with exponential backoff retry."""

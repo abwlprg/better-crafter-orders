@@ -33,6 +33,12 @@ from functions.email_parser import PARSER_REGISTRY, get_parser
 from functions.gmail_client import GmailClient
 from functions.word_generator import WordReportGenerator
 
+# ── Hardcoded business constants ──────────────────
+# Stephen is currently the only supplier with a working parser.
+# Other suppliers (Michael, Lee, Amos, Shawn) will be added when their formats are known.
+STEPHEN_EMAIL = "7173783020@hellofax.com"
+INBOX_ACCOUNT = "bettercrafter1@gmail.com"
+
 app = FastAPI(title="Order Automation System", version="1.0.0")
 
 # CORS — allow local dev + Firebase Hosting URLs
@@ -104,7 +110,9 @@ def fetch_orders_stream(hours_back: int = 8760):
 
         # Step 2: Fetch email list
         yield _sse_event("progress", {"step": "fetch_list", "message": "📨 Fetching email list from Gmail...", "percent": 10})
-        supplier_email = os.environ.get("STEPHEN_EMAIL", "7173783020@hellofax.com")
+        supplier_email = STEPHEN_EMAIL  # hardcoded constant — no env var needed
+        logger.info("🎯 Target supplier (hardcoded): %s", supplier_email)
+        logger.info("⏰ Time window: %d hours back", hours_back)
         try:
             messages = gmail.list_supplier_messages(
                 supplier_email=supplier_email,
@@ -134,6 +142,10 @@ def fetch_orders_stream(hours_back: int = 8760):
             if has_pdf:
                 pdf_count += 1
 
+            logger.info("  🔍 [%d/%d] msg_id=%s body=%d chars pdf=%d chars files=%s",
+                        idx, total, msg.message_id[:10], len(msg.body),
+                        len(msg.pdf_text or ""), msg.pdf_filenames or [])
+
             result = parser.parse(msg.body, pdf_text=msg.pdf_text or None)
             if result and _is_valid_order(result):
                 orders.append(result)
@@ -145,7 +157,14 @@ def fetch_orders_stream(hours_back: int = 8760):
                 )
             else:
                 failed += 1
-                logger.info("  ❌ [%d/%d] Skipped (missing required fields)", idx, total)
+                missing = []
+                if result:
+                    for k in ("customer_name", "item_code", "quantity", "ship_by"):
+                        if not result.get(k):
+                            missing.append(k)
+                else:
+                    missing = ["<parser returned None>"]
+                logger.info("  ❌ [%d/%d] Skipped — missing: %s", idx, total, missing)
 
             # Send progress every email
             pct = 25 + int((idx / total) * 65)  # 25% → 90%
@@ -194,8 +213,9 @@ def fetch_orders(hours_back: int = 8760):
 
         gmail = _get_gmail_client()
         parser = get_parser("stephen")
-        supplier_email = os.environ.get("STEPHEN_EMAIL", "7173783020@hellofax.com")
+        supplier_email = STEPHEN_EMAIL  # hardcoded constant — no env var needed
 
+        logger.info("🎯 Target supplier (hardcoded): %s", supplier_email)
         logger.info("📨 Fetching emails to %s...", supplier_email)
         messages = gmail.list_supplier_messages(
             supplier_email=supplier_email,
