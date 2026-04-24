@@ -93,8 +93,10 @@ def _sse_event(event: str, data: dict) -> str:
 
 
 @app.get("/api/orders-stream")
-def fetch_orders_stream(hours_back: int = 8760):
-    """SSE endpoint — streams progress events while fetching/parsing emails."""
+def fetch_orders_stream(start_date: str = None, end_date: str = None):
+    """SSE endpoint — streams progress events while fetching/parsing emails.
+    start_date and end_date are ISO strings like '2025-07-11'
+    """
 
     def event_generator():
         global _cached_orders
@@ -112,11 +114,12 @@ def fetch_orders_stream(hours_back: int = 8760):
         yield _sse_event("progress", {"step": "fetch_list", "message": "📨 Fetching email list from Gmail...", "percent": 10})
         supplier_email = STEPHEN_EMAIL  # hardcoded constant — no env var needed
         logger.info("🎯 Target supplier (hardcoded): %s", supplier_email)
-        logger.info("⏰ Time window: %d hours back", hours_back)
+        logger.info("📅 Date range: %s → %s", start_date or "(no start)", end_date or "(no end)")
         try:
             messages = gmail.list_supplier_messages(
                 supplier_email=supplier_email,
-                hours_back=hours_back,
+                start_date=start_date,
+                end_date=end_date,
             )
         except Exception as e:
             yield _sse_event("error", {"message": f"Failed to fetch emails: {e}"})
@@ -202,13 +205,13 @@ def fetch_orders_stream(hours_back: int = 8760):
 
 
 @app.get("/api/orders")
-def fetch_orders(hours_back: int = 8760):
+def fetch_orders(start_date: str = None, end_date: str = None):
     """Fetch and parse real supplier emails from Gmail (non-streaming)."""
     global _cached_orders
     t0 = time.time()
     try:
         logger.info("═" * 50)
-        logger.info("🚀 Starting order fetch (hours_back=%d)", hours_back)
+        logger.info("🚀 Starting order fetch start=%s end=%s", start_date, end_date)
         logger.info("═" * 50)
 
         gmail = _get_gmail_client()
@@ -216,10 +219,11 @@ def fetch_orders(hours_back: int = 8760):
         supplier_email = STEPHEN_EMAIL  # hardcoded constant — no env var needed
 
         logger.info("🎯 Target supplier (hardcoded): %s", supplier_email)
-        logger.info("📨 Fetching emails to %s...", supplier_email)
+        logger.info("📅 Date range: %s → %s", start_date or "(no start)", end_date or "(no end)")
         messages = gmail.list_supplier_messages(
             supplier_email=supplier_email,
-            hours_back=hours_back,
+            start_date=start_date,
+            end_date=end_date,
         )
         logger.info("📬 Found %d emails", len(messages))
 

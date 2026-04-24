@@ -32,21 +32,24 @@ function App() {
     setStats(null)
     setReportFile(null)
 
-    // Calculate hours_back from selected dates
-    // If startDate selected → fetch from that date. If no date → default 1 year
-    let hoursBack = 8760 // default: 1 year
+    // Build query params from selected dates
+    const params = new URLSearchParams()
     if (startDate) {
-      const now = new Date()
-      const diffMs = now - startDate
-      hoursBack = Math.max(24, Math.ceil(diffMs / (1000 * 60 * 60)))
-    } else if (endDate) {
-      const now = new Date()
-      const diffMs = now - endDate
-      hoursBack = Math.max(24, Math.ceil(diffMs / (1000 * 60 * 60)) + 24)
+      const y = startDate.getFullYear()
+      const m = String(startDate.getMonth() + 1).padStart(2, '0')
+      const d = String(startDate.getDate()).padStart(2, '0')
+      params.set('start_date', `${y}-${m}-${d}`)
     }
+    if (endDate) {
+      const y = endDate.getFullYear()
+      const m = String(endDate.getMonth() + 1).padStart(2, '0')
+      const d = String(endDate.getDate()).padStart(2, '0')
+      params.set('end_date', `${y}-${m}-${d}`)
+    }
+    // If no dates selected → last 7 days (backend default)
 
     // Use SSE for streaming progress
-    const evtSource = new EventSource(`${API_URL}/orders-stream?hours_back=${hoursBack}`)
+    const evtSource = new EventSource(`${API_URL}/orders-stream?${params.toString()}`)
     eventSourceRef.current = evtSource
 
     evtSource.addEventListener('progress', (e) => {
@@ -195,9 +198,11 @@ function App() {
         <button onClick={fetchOrders} disabled={loading} className="btn btn-primary">
           {loading
             ? 'Fetching emails…'
-            : startDate
-              ? `Fetch Orders from ${startDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}`
-              : 'Fetch Orders from Gmail (1 year)'}
+            : startDate && endDate
+              ? `Fetch Orders ${startDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})} – ${endDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}`
+              : startDate
+                ? `Fetch Orders from ${startDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}`
+                : 'Fetch Orders (last 7 days)'}
         </button>
 
         {orders.length > 0 && (

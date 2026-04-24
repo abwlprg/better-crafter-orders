@@ -68,9 +68,11 @@ class GmailClient:
         )
         logger.info("  ✅ Gmail service built")
 
-    def list_supplier_messages(self, supplier_email: str, hours_back: int) -> list[GmailMessage]:
-        """Fetch and decode sent emails to a supplier within a recent time window."""
-        search_query = self._build_search_query(supplier_email, hours_back)
+    def list_supplier_messages(self, supplier_email: str, start_date: str = None, end_date: str = None) -> list[GmailMessage]:
+        """Fetch and decode sent emails to a supplier within a date range.
+        start_date / end_date: 'YYYY-MM-DD' strings, both optional.
+        """
+        search_query = self._build_search_query(supplier_email, start_date, end_date)
         logger.info("  🔎 Gmail query: %s", search_query)
 
         # Paginate through ALL results (Gmail defaults to 100 per page, max 500)
@@ -157,26 +159,46 @@ class GmailClient:
         return messages
 
     @staticmethod
-    def _build_search_query(supplier_email: str, hours_back: int) -> str:
-        """Build Gmail query for orders sent BY us TO a supplier, with our inbox in BCC.
+    def _build_search_query(supplier_email: str, start_date: str = None, end_date: str = None) -> str:
+        """Build Gmail query using Gmail's after:/before: date operators.
 
-        HARDCODED defaults (no env vars needed):
+        HARDCODED:
         - Inbox: bettercrafter1@gmail.com (BCC'd on every order)
-        - Supplier: passed in as parameter (Stephen = 7173783020@hellofax.com)
+        - Supplier: passed in as parameter
+
+        start_date / end_date: 'YYYY-MM-DD' strings (optional).
+        If neither is given, defaults to last 7 days.
         """
-        days = max(1, math.ceil(hours_back / 24))
+        from datetime import datetime, timedelta
         inbox_account = "bettercrafter1@gmail.com"
+
+        # Build date part of query
+        if start_date or end_date:
+            date_part = ""
+            if start_date:
+                # Gmail after: is exclusive, so use same date (it includes that day)
+                date_part += f"after:{start_date.replace('-', '/')} "
+            if end_date:
+                # Gmail before: is exclusive, add 1 day to include end_date itself
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+                date_part += f"before:{end_dt.strftime('%Y/%m/%d')} "
+        else:
+            # Default: last 7 days
+            since = (datetime.utcnow() - timedelta(days=7)).strftime("%Y/%m/%d")
+            date_part = f"after:{since} "
+
         query = (
             f"deliveredto:{inbox_account} "
             f"to:{supplier_email} "
             f"has:attachment filename:pdf "
-            f"newer_than:{days}d"
+            f"{date_part.strip()}"
         )
         logger.info("  🛠️  Building query:")
-        logger.info("       inbox    = %s", inbox_account)
-        logger.info("       supplier = %s", supplier_email)
-        logger.info("       window   = %d days (from %d hours_back)", days, hours_back)
-        logger.info("       full q   = %s", query)
+        logger.info("       inbox      = %s", inbox_account)
+        logger.info("       supplier   = %s", supplier_email)
+        logger.info("       start_date = %s", start_date or "(none)")
+        logger.info("       end_date   = %s", end_date or "(none)")
+        logger.info("       full q     = %s", query)
         return query
 
     def _execute_with_retry(self, operation: str, func: Callable[[], Any]) -> Any:
