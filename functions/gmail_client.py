@@ -128,6 +128,18 @@ class GmailClient:
             decoded_body = self._extract_preferred_body(payload.get("payload", {}))
             pdf_text, pdf_filenames = self._extract_pdf_attachments(payload, message_id)
 
+            # Extract headers for diagnostic logging
+            headers = {h["name"].lower(): h["value"] for h in payload.get("payload", {}).get("headers", [])}
+            logger.info("       📅 Date:    %s", headers.get("date", "?"))
+            logger.info("       📝 Subject: %s", headers.get("subject", "?"))
+            logger.info("       👤 From:    %s", headers.get("from", "?"))
+            logger.info("       📨 To:      %s", headers.get("to", "?"))
+            if headers.get("cc"):
+                logger.info("       📋 Cc:      %s", headers["cc"])
+            if headers.get("bcc"):
+                logger.info("       🤫 Bcc:     %s", headers["bcc"])
+            logger.info("       🆔 Delivered-To: %s", headers.get("delivered-to", "?"))
+
             body_len = len(decoded_body)
             pdf_info = f", 📎 {len(pdf_filenames)} PDF(s): {pdf_filenames}" if pdf_filenames else ""
             logger.info("       body=%d chars%s", body_len, pdf_info)
