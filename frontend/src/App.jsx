@@ -110,8 +110,16 @@ function App() {
     setGenerating(true)
     setError(null)
     try {
-      const res = await fetch(`${API_URL}/generate-report`, { method: 'POST' })
-      if (!res.ok) throw new Error('Failed to generate report')
+      // Send orders in the body to avoid cross-instance cache miss in Cloud Run
+      const res = await fetch(`${API_URL}/generate-report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orders }),
+      })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.detail || `Server error ${res.status}`)
+      }
       const data = await res.json()
       setReportFile(data.filename)
     } catch (e) {

@@ -28,6 +28,12 @@ if env_file.exists():
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
+from typing import List, Optional
+
+
+class GenerateReportRequest(BaseModel):
+    orders: Optional[List[dict]] = None  # frontend can send orders directly
 
 from functions.email_parser import PARSER_REGISTRY, get_parser
 from functions.gmail_client import GmailClient
@@ -269,26 +275,41 @@ def fetch_orders(start_date: str = None, end_date: str = None):
 
 
 @app.post("/api/generate-report")
-def generate_report():
-    """Generate a Word report from the cached orders."""
-    if not _cached_orders:
+def generate_report(body: GenerateReportRequest = None):
+    """Generate a Word report from the cached orders.
+    
+    Orders can be sent in the POST body (preferred) or read from in-memory cache.
+    Sending in the body avoids issues with multiple Cloud Run instances.
+    """
+    logger.info("📝 generate_report called — body_orders=%s, cache=%d",
+                len(body.orders) if body and body.orders else "none",
+                len(_cached_orders))
+
+    # Prefer orders from request body (avoids cross-instance cache miss)
+    orders_to_use = (body.orders if body and body.orders else None) or _cached_orders
+
+    logger.info("📝 orders_to_use count: %d", len(orders_to_use))
+
+    if not orders_to_use:
+        logger.warning("⚠️ No orders available — cache empty and no body orders")
         raise HTTPException(status_code=400, detail="No orders loaded. Fetch orders first.")
 
+    logger.info("📋 TEMPLATE_PATH: %s — exists=%s", TEMPLATE_PATH, TEMPLATE_PATH.exists())
     if not TEMPLATE_PATH.exists():
-        raise HTTPException(status_code=500, detail="Template file not found.")
+        raise HTTPException(status_code=500, detail=f"Template file not found: {TEMPLATE_PATH}")
 
     try:
-        logger.info("📝 Generating Word report with %d orders...", len(_cached_orders))
+        logger.info("📝 Generating Word report with %d orders...", len(orders_to_use))
         generator = WordReportGenerator(str(TEMPLATE_PATH))
         report_date = date.today()
-        path = generator.generate_daily_report(_cached_orders, report_date)
+        path = generator.generate_daily_report(orders_to_use, report_date)
         dest = OUTPUT_DIR / f"stephen_orders_{report_date.isoformat()}.docx"
         dest.write_bytes(path.read_bytes())
-        logger.info("✅ Report saved: %s (%d orders)", dest.name, len(_cached_orders))
+        logger.info("✅ Report saved: %s (%d orders)", dest.name, len(orders_to_use))
         return {
             "success": True,
             "filename": dest.name,
-            "order_count": len(_cached_orders),
+            "order_count": len(orders_to_use),
             "date": report_date.isoformat(),
         }
     except Exception as e:
