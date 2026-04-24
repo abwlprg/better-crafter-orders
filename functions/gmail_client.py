@@ -145,9 +145,14 @@ class GmailClient:
 
     @staticmethod
     def _build_search_query(supplier_email: str, hours_back: int) -> str:
-        """Build Gmail query for sent emails with day-based fallback window."""
+        """Build Gmail query for orders delivered (To/Cc/Bcc) to the inbox account.
+
+        Uses `deliveredto:` operator which matches To, Cc, AND Bcc — important
+        because Ben sends orders with our account in BCC.
+        """
         days = max(1, math.ceil(hours_back / 24))
-        return f"to:{supplier_email} in:sent newer_than:{days}d"
+        # supplier_email here is actually the inbox account (bettercrafter1@gmail.com)
+        return f"deliveredto:{supplier_email} has:attachment filename:pdf newer_than:{days}d"
 
     def _execute_with_retry(self, operation: str, func: Callable[[], Any]) -> Any:
         """Execute Gmail API call with exponential backoff retry."""
