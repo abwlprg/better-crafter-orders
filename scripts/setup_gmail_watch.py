@@ -33,7 +33,7 @@ import config
 
 GCP_PROJECT   = os.environ.get("GCP_PROJECT", "ordersbc-494213")
 PUBSUB_TOPIC  = f"projects/{GCP_PROJECT}/topics/gmail-orders"
-GMAIL_ACCOUNT = config.GMAIL_ACCOUNT  # bettercrafterorders@gmail.com
+GMAIL_ACCOUNT = os.environ.get("GMAIL_ACCOUNT", "bettercrafter1@gmail.com")
 
 def get_gmail_service():
     creds = Credentials(
