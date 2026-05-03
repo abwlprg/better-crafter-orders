@@ -317,6 +317,56 @@ def generate_report(body: GenerateReportRequest = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/append-to-onedrive")
+def append_to_onedrive(body: GenerateReportRequest = None):
+    """Append parsed orders to the existing OneDrive Word document.
+
+    Downloads the live .docx from OneDrive, appends new order rows (skipping
+    duplicates), and uploads it back.
+    """
+    try:
+        from functions.onedrive_client import download_docx, upload_docx, get_file_name
+        from functions.word_generator import append_orders_to_existing_docx
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"OneDrive module not available: {e}")
+
+    orders_to_use = (body.orders if body and body.orders else None) or _cached_orders
+    if not orders_to_use:
+        raise HTTPException(status_code=400, detail="No orders loaded. Fetch orders first.")
+
+    try:
+        file_name = get_file_name()
+        logger.info("📥 Downloading '%s' from OneDrive...", file_name)
+        docx_bytes = download_docx()
+
+        logger.info("✏️  Processing %d order(s)...", len(orders_to_use))
+        updated_bytes, appended, skipped = append_orders_to_existing_docx(docx_bytes, orders_to_use)
+
+        if appended == 0:
+            logger.info("⏭️  All %d orders already in file — nothing to upload", skipped)
+            return {
+                "success": True,
+                "file_name": file_name,
+                "orders_appended": 0,
+                "orders_skipped": skipped,
+                "message": f"All {skipped} order(s) already exist in the file — no changes made.",
+            }
+
+        logger.info("📤 Uploading updated document back to OneDrive...")
+        upload_docx(updated_bytes)
+
+        logger.info("✅ OneDrive updated: %s (+%d rows, %d skipped)", file_name, appended, skipped)
+        return {
+            "success": True,
+            "file_name": file_name,
+            "orders_appended": appended,
+            "orders_skipped": skipped,
+        }
+    except Exception as e:
+        logger.error("💥 OneDrive append failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/download-report/{filename}")
 def download_report(filename: str):
     """Download a generated Word report."""

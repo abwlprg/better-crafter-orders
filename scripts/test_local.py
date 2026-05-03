@@ -1,138 +1,143 @@
-"""Test completo con emails REALES de Gmail del proveedor Stephen."""
-
-from __future__ import annotations
-
+"""
+ShopGoodwill API — Test Suite
+Corre esto localmente: python test_shopgoodwill.py
+Pega el output completo en el chat para continuar con el plan.
+"""
+import requests
 import json
-import os
-import sys
-from datetime import date
-from pathlib import Path
+import time
 
-# Cargar .env manualmente
-env_file = Path(__file__).parent / ".env"
-if env_file.exists():
-    for line in env_file.read_text().splitlines():
-        if "=" in line and not line.startswith("#"):
-            key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip())
+API = "https://buyerapi.shopgoodwill.com/api"
 
-sys.path.insert(0, str(Path(__file__).parent))
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:12.0) Gecko/20100101 Firefox/12.0",
+    "Accept": "application/json, text/plain, */*",
+    "Origin": "https://shopgoodwill.com",
+    "Referer": "https://shopgoodwill.com/",
+    "Content-Type": "application/json",
+}
 
-from functions.email_parser import PARSER_REGISTRY
+BASE_BODY = {
+    "isSize": False, "isWeeklyDeal": False,
+    "isOneCentShippingOnly": False, "isGreatDealsOnly": False,
+    "searchText": "vintage levis",
+    "selectedGroup": "", "selectedCategoryIds": "",
+    "selectedSellerIds": "", "lowPrice": "0", "highPrice": "999999",
+    "searchBuyNowOnly": "", "searchPickupOnly": "false",
+    "searchNoPickupOnly": "false", "searchOneCentShippingOnly": "false",
+    "searchDescriptions": "false",
+    "searchClosedAuctions": "false",
+    "closedAuctionEndingDate": "1/1/2001",
+    "closedAuctionDaysBack": "0",
+    "savedSearchId": 0,
+    "sortColumn": "1",
+    "page": "1", "pageSize": "3",
+    "sortDescending": "false",
+}
 
-# Mockear firebase_admin para test local
-import unittest.mock as _mock
-import types as _types
+def separator(title):
+    print(f"\n{'='*60}")
+    print(f"  {title}")
+    print('='*60)
 
-_fb_mock = _types.ModuleType("firebase_admin")
-_fb_mock.storage = _mock.MagicMock()
-sys.modules.setdefault("firebase_admin", _fb_mock)
-sys.modules.setdefault("firebase_admin.storage", _fb_mock.storage)
-sys.modules.setdefault("firebase_functions", _types.ModuleType("firebase_functions"))
-sys.modules.setdefault("firebase_functions.params", _types.ModuleType("firebase_functions.params"))
+# ── TEST 1: Open listings anonymous ──────────────────────────
+separator("TEST 1: Open listings — anonymous")
+try:
+    body = {**BASE_BODY, "searchClosedAuctions": "false"}
+    r = requests.post(f"{API}/Search/ItemListing", json=body, headers=HEADERS, timeout=20)
+    print(f"Status: {r.status_code}")
+    j = r.json()
+    cat_none = j.get("categoryListModel") is None
+    print(f"categoryListModel is None: {cat_none}")
+    items = j.get("searchResults", {}).get("items", [])
+    total = j.get("searchResults", {}).get("itemCount", 0)
+    print(f"Total count: {total} | Returned: {len(items)}")
+    if items:
+        print(f"\nItem keys: {list(items[0].keys())}")
+        print(f"\nFirst item:\n{json.dumps(items[0], indent=2)}")
+except Exception as e:
+    print(f"ERROR: {e}")
 
-from functions.gmail_client import GmailClient
-from functions.word_generator import WordReportGenerator
+time.sleep(1)
 
-TEMPLATE_PATH = Path(__file__).parent / "templates" / "stephen_template.docx"
-OUTPUT_DIR = Path(__file__).parent / "test_output"
-OUTPUT_DIR.mkdir(exist_ok=True)
+# ── TEST 2: Closed listings anonymous ────────────────────────
+separator("TEST 2: Closed listings — anonymous (no Bearer)")
+try:
+    body = {
+        **BASE_BODY,
+        "searchClosedAuctions": "true",
+        "closedAuctionEndingDate": "1/1/2001",
+        "closedAuctionDaysBack": "0",
+        "sortColumn": "4",
+        "sortDescending": "true",
+    }
+    r = requests.post(f"{API}/Search/ItemListing", json=body, headers=HEADERS, timeout=20)
+    print(f"Status: {r.status_code}")
+    j = r.json()
+    cat_none = j.get("categoryListModel") is None
+    print(f"categoryListModel is None: {cat_none}")
+    items = j.get("searchResults", {}).get("items", [])
+    total = j.get("searchResults", {}).get("itemCount", 0)
+    print(f"Total count: {total} | Returned: {len(items)}")
+    if items:
+        print(f"\nItem keys: {list(items[0].keys())}")
+        print(f"\nFirst item:\n{json.dumps(items[0], indent=2)}")
+    elif not cat_none:
+        print("Empty items — closed auctions may need auth")
+except Exception as e:
+    print(f"ERROR: {e}")
 
+time.sleep(1)
 
-def fetch_real_orders() -> list[dict]:
-    """Conecta a Gmail real, parsea todos los emails del proveedor."""
-    print("\n── 1. Conectando a Gmail ────────────────────────")
-    client_id     = os.environ["GMAIL_CLIENT_ID"]
-    client_secret = os.environ["GMAIL_CLIENT_SECRET"]
-    refresh_token = os.environ["GMAIL_REFRESH_TOKEN"]
+# ── TEST 3: Item Detail endpoint ──────────────────────────────
+separator("TEST 3: Item Detail — single item (uses itemId from Test 1)")
+try:
+    # Re-fetch to get a real itemId
+    body = {**BASE_BODY, "searchClosedAuctions": "false", "pageSize": "1"}
+    r = requests.post(f"{API}/Search/ItemListing", json=body, headers=HEADERS, timeout=20)
+    items = r.json().get("searchResults", {}).get("items", [])
+    if items:
+        item_id = items[0]["itemId"]
+        print(f"Testing itemId: {item_id}")
+        r2 = requests.get(
+            f"{API}/itemDetail/GetItemDetailModelByItemId/{item_id}",
+            headers=HEADERS, timeout=20
+        )
+        print(f"Status: {r2.status_code}")
+        detail = r2.json()
+        print(f"Detail keys: {list(detail.keys())}")
+        # Show price/status fields
+        for k in ["currentPrice", "status", "message", "auctionEnded", "isClosed", "endTime", "numBids"]:
+            if k in detail:
+                print(f"  {k}: {detail[k]}")
+    else:
+        print("No items from Test 1 to use")
+except Exception as e:
+    print(f"ERROR: {e}")
 
-    gmail = GmailClient(
-        client_id=client_id,
-        client_secret=client_secret,
-        refresh_token=refresh_token,
-        gmail_account=os.environ.get("GMAIL_ACCOUNT", "bettercrafterorders@gmail.com"),
-    )
-    parser = PARSER_REGISTRY["stephen"]
+time.sleep(1)
 
-    messages = gmail.list_supplier_messages(
-        supplier_email=os.environ.get("STEPHEN_EMAIL", "7173783020@hellofax.com"),
-        hours_back=8760,
-    )  # último año
-    print(f"   Emails encontrados: {len(messages)}")
+# ── TEST 4: Check what fields closed items have (if Test 2 returned items) ─
+separator("TEST 4: Field check — closed item currentPrice / endTime")
+try:
+    body = {
+        **BASE_BODY,
+        "searchClosedAuctions": "true",
+        "closedAuctionEndingDate": "1/1/2001",
+        "sortDescending": "true",
+        "pageSize": "1",
+    }
+    r = requests.post(f"{API}/Search/ItemListing", json=body, headers=HEADERS, timeout=20)
+    items = r.json().get("searchResults", {}).get("items", [])
+    if items:
+        item = items[0]
+        for field in ["currentPrice", "endTime", "numBids", "auctionEnded",
+                      "isClosed", "isAvailable", "sellerId", "sellerName",
+                      "title", "imageURL", "imageServer", "imageName"]:
+            print(f"  {field}: {item.get(field, '<<MISSING>>')}")
+    else:
+        print("No closed items returned (may need auth)")
+except Exception as e:
+    print(f"ERROR: {e}")
 
-    orders: list[dict] = []
-    failed = 0
-    for msg in messages:
-        result = parser.parse(msg.body)
-        if result:
-            orders.append(result)
-        else:
-            failed += 1
-
-    print(f"✅ Parseados correctamente: {len(orders)}")
-    if failed:
-        print(f"⚠️  No parseados (emails sin formato de orden): {failed}")
-    return orders
-
-
-def test_word_generation(orders: list[dict]) -> Path | None:
-    print("\n── 2. Generando Word con datos reales ──────────")
-    if not orders:
-        print("❌ No hay órdenes para generar")
-        return None
-    if not TEMPLATE_PATH.exists():
-        print(f"❌ Plantilla no encontrada: {TEMPLATE_PATH}")
-        return None
-
-    generator = WordReportGenerator(str(TEMPLATE_PATH))
-    report_date = date.today()
-
-    try:
-        path = generator.generate_daily_report(orders, report_date)
-        dest = OUTPUT_DIR / f"stephen_orders_{report_date.isoformat()}.docx"
-        dest.write_bytes(path.read_bytes())
-        print(f"✅ Documento generado con {len(orders)} órdenes: {dest}")
-        return dest
-    except Exception as e:
-        print(f"❌ Error generando Word: {e}")
-        import traceback; traceback.print_exc()
-        return None
-
-
-def test_dedup_simulation(orders: list[dict]) -> None:
-    print("\n── 3. Deduplicación (simulada en JSON local) ────")
-    dedup_file = OUTPUT_DIR / "processed_emails.json"
-    processed: dict = json.loads(dedup_file.read_text()) if dedup_file.exists() else {}
-
-    nuevos = 0
-    for i, order in enumerate(orders):
-        msg_id = f"real_msg_{i:03d}"
-        if msg_id not in processed:
-            processed[msg_id] = {"customer_name": order.get("customer_name", ""), "order_date": order.get("order_date", "")}
-            nuevos += 1
-
-    dedup_file.write_text(json.dumps(processed, indent=2))
-    print(f"✅ {nuevos} órdenes nuevas marcadas | {len(processed)} total en registro")
-
-
-def print_orders_summary(orders: list[dict]) -> None:
-    print("\n── Resumen de órdenes ───────────────────────────")
-    for i, o in enumerate(orders, 1):
-        print(f"  {i:02d}. [{o.get('order_date','?')}] {o.get('item_code','?')} — {o.get('item_name','?')}")
-        print(f"       Cliente: {o.get('customer_name','?')} | QTY: {o.get('quantity','?')} | Color: {o.get('color','?')} | Ship by: {o.get('ship_by','?')}")
-
-
-if __name__ == "__main__":
-    print("=" * 52)
-    print("  TEST REAL — Order Automation System (Gmail Live)")
-    print("=" * 52)
-
-    orders = fetch_real_orders()
-    if orders:
-        print_orders_summary(orders)
-        test_word_generation(orders)
-        test_dedup_simulation(orders)
-
-    print("\n" + "=" * 52)
-    print("  Revisa test_output/ para ver el .docx generado")
-    print("=" * 52)
+print("\n✅ Tests complete — pega este output en el chat")

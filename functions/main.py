@@ -17,6 +17,7 @@ from email_parser import get_parser
 from firestore_client import ProcessedEmailRecord, ProcessedEmailStore
 from gmail_client import GmailClient
 from word_generator import WordReportGenerator
+from onedrive_client import download_docx, upload_docx
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -97,6 +98,22 @@ def process_stephen_orders(event: scheduler_fn.ScheduledEvent) -> None:
     if not parsed_orders:
         logger.info("No new parseable orders found")
         return
+
+    # ── Append to OneDrive master file (Bird Feeders & Houses - Steven 2026) ──
+    try:
+        from word_generator import append_orders_to_existing_docx
+        logger.info("📥 Downloading Steven's OneDrive file...")
+        docx_bytes = download_docx()
+        updated_bytes, appended, skipped = append_orders_to_existing_docx(docx_bytes, parsed_orders)
+        if appended > 0:
+            logger.info("📤 Uploading updated file (%d new rows, %d skipped)...", appended, skipped)
+            upload_docx(updated_bytes)
+            logger.info("✅ OneDrive file updated successfully")
+        else:
+            logger.info("⏭️  All %d orders already in OneDrive file — skipping upload", skipped)
+    except Exception as error:
+        logger.error("⚠️  OneDrive append failed (continuing without it): %s", error, exc_info=error)
+        # Don't stop here — still mark emails as processed even if OneDrive fails
 
     report_generator = WordReportGenerator(_resolve_template_path(config.TEMPLATE_PATH))
     report_date = date.today()

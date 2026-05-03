@@ -8,3 +8,4 @@ frontend/node_modules/
 test_output/
 *.docx
 client_secret_*.json
+.onedrive_token

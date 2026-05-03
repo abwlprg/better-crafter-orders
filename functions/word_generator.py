@@ -158,6 +158,75 @@ class WordReportGenerator:
         document.save(str(file_path))
 
 
+def append_orders_to_existing_docx(docx_bytes: bytes, orders: list[dict[str, str]]) -> tuple[bytes, int, int]:
+    """
+    Append order rows to the first table in an existing .docx file.
+    Skips orders that are already present (duplicate detection).
+
+    Args:
+        docx_bytes: Raw bytes of the existing Word document (downloaded from OneDrive).
+        orders:     List of order dicts with keys order_date, item_code, quantity,
+                    color, customer_name, ship_by.
+
+    Returns:
+        Tuple of (updated_bytes, appended_count, skipped_count).
+    """
+    if not orders:
+        raise ValueError("At least one order is required")
+
+    import io
+
+    doc = Document(io.BytesIO(docx_bytes))
+
+    if not doc.tables:
+        raise ValueError("The OneDrive document must contain at least one table")
+
+    table = doc.tables[0]
+
+    # Build a set of existing row signatures to detect duplicates
+    # Key: (order_date, item_code, customer_name) — enough to identify a unique order
+    existing = set()
+    for row in table.rows:
+        cells = [c.text.strip() for c in row.cells]
+        if len(cells) >= 5:
+            existing.add((cells[0], cells[1], cells[4]))  # date, item_code, customer_name
+
+    # Sort ascending so oldest orders come first
+    sorted_orders = WordReportGenerator._sort_orders_ascending(orders)
+
+    appended = 0
+    skipped  = 0
+    for order in sorted_orders:
+        key = (
+            order.get("order_date", "").strip(),
+            order.get("item_code", "").strip(),
+            order.get("customer_name", "").strip(),
+        )
+        if key in existing:
+            logger.info(f"⏭️  Skipping duplicate: {key}")
+            skipped += 1
+            continue
+
+        row_cells = table.add_row().cells
+        row_cells[0].text = order.get("order_date", "")      # Date
+        row_cells[1].text = order.get("item_code", "")       # Item No.
+        row_cells[2].text = order.get("quantity", "")        # QTY
+        row_cells[3].text = order.get("color", "")           # Color
+        row_cells[4].text = order.get("customer_name", "")   # Customer Name
+        row_cells[5].text = "y"                              # Sent to Supplier
+        row_cells[6].text = order.get("ship_by", "")         # Ship by date
+        if len(row_cells) > 7:
+            row_cells[7].text = ""                           # Sent to customer
+        existing.add(key)
+        appended += 1
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    logger.info(f"OneDrive docx: {appended} appended, {skipped} skipped (duplicates)")
+    return buf.read(), appended, skipped
+
+
 def build_generated_timestamp() -> str:
     """Build UTC timestamp string for diagnostics and logging."""
     return datetime.now(timezone.utc).isoformat()
