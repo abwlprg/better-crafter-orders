@@ -40,10 +40,13 @@ from functions.gmail_client import GmailClient
 from functions.word_generator import WordReportGenerator
 
 # ── Hardcoded business constants ──────────────────
-# Stephen is currently the only supplier with a working parser.
-# Other suppliers (Michael, Lee, Amos, Shawn) will be added when their formats are known.
 STEPHEN_EMAIL = "7173783020@hellofax.com"
 INBOX_ACCOUNT = "bettercrafter1@gmail.com"
+
+# Gmail OAuth credentials (for webhook processing)
+GMAIL_CLIENT_ID     = os.environ.get("GMAIL_CLIENT_ID", "706034452884-8u5fq9rsmb33o52ltj5qp4gnv668v2gl.apps.googleusercontent.com")
+GMAIL_CLIENT_SECRET = os.environ.get("GMAIL_CLIENT_SECRET", "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")
+GMAIL_REFRESH_TOKEN = os.environ.get("GMAIL_REFRESH_TOKEN", "")
 
 app = FastAPI(title="Order Automation System", version="1.0.0")
 
@@ -77,7 +80,7 @@ _cached_orders: list[dict] = []
 def _get_gmail_client() -> GmailClient:
     logger.info("🔐 Authenticating with Gmail API...")
     client = GmailClient(
-        gmail_account=os.environ.get("GMAIL_ACCOUNT", "bettercrafterorders@gmail.com"),
+        gmail_account=os.environ.get("GMAIL_ACCOUNT", "bettercrafter1@gmail.com"),
         client_id=os.environ["GMAIL_CLIENT_ID"],
         client_secret=os.environ["GMAIL_CLIENT_SECRET"],
         refresh_token=os.environ["GMAIL_REFRESH_TOKEN"],
@@ -378,6 +381,142 @@ def download_report(filename: str):
         filename=filename,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
+
+
+@app.post("/api/gmail-webhook")
+async def gmail_webhook(request: Request):
+    """Receive Gmail push notifications from Google Pub/Sub.
+
+    When a new email arrives in the Gmail inbox, Pub/Sub calls this endpoint.
+    We fetch the new message, parse it for orders, and append to OneDrive.
+    """
+    import base64
+    import json as _json
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    # Pub/Sub wraps the payload in message.data (base64-encoded)
+    encoded = body.get("message", {}).get("data", "")
+    if not encoded:
+        return {"status": "no_data"}
+
+    try:
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        notification = _json.loads(decoded)
+    except Exception as e:
+        logger.error("Failed to decode Pub/Sub message: %s", e)
+        raise HTTPException(status_code=400, detail="Bad message data")
+
+    email_address = notification.get("emailAddress", "")
+    history_id    = notification.get("historyId", "")
+    logger.info("📬 Gmail push notification — account=%s historyId=%s", email_address, history_id)
+
+    # Only process if we have Gmail credentials
+    if not GMAIL_REFRESH_TOKEN:
+        logger.warning("GMAIL_REFRESH_TOKEN not set — skipping webhook processing")
+        return {"status": "skipped", "reason": "no_credentials"}
+
+    try:
+        from functions.email_parser import get_parser
+        from functions.firestore_client import ProcessedEmailRecord, ProcessedEmailStore
+        from functions.onedrive_client import download_docx, upload_docx
+        from functions.word_generator import append_orders_to_existing_docx
+
+        gmail = GmailClient(
+            gmail_account=INBOX_ACCOUNT,
+            client_id=GMAIL_CLIENT_ID,
+            client_secret=GMAIL_CLIENT_SECRET,
+            refresh_token=GMAIL_REFRESH_TOKEN,
+        )
+        store  = ProcessedEmailStore("processed_emails")
+        parser = get_parser("stephen")
+
+        # Fetch recent messages from Stephen (last 2 hours to catch the new one)
+        messages = gmail.list_supplier_messages(
+            supplier_email=STEPHEN_EMAIL,
+            start_date=None,
+            end_date=None,
+        )
+
+        new_orders = []
+        processed_ids = []
+        for msg in messages:
+            if store.is_processed(msg.message_id):
+                continue
+            parsed = parser.parse(msg.body, pdf_text=msg.pdf_text or None)
+            if not parsed or not parsed.get("item_code", "").strip():
+                continue
+            order = {k: str(v).strip() for k, v in parsed.items()}
+            new_orders.append(order)
+            processed_ids.append(msg.message_id)
+
+        if not new_orders:
+            logger.info("📬 No new parseable orders from webhook")
+            return {"status": "ok", "orders_found": 0}
+
+        # Append to OneDrive
+        docx_bytes = download_docx()
+        updated, appended, skipped = append_orders_to_existing_docx(docx_bytes, new_orders)
+        if appended > 0:
+            upload_docx(updated)
+            logger.info("✅ Webhook: appended %d orders to OneDrive (%d skipped)", appended, skipped)
+
+        # Mark emails as processed
+        for msg_id in processed_ids:
+            try:
+                store.mark_processed(ProcessedEmailRecord(
+                    message_id=msg_id,
+                    customer_name=new_orders[processed_ids.index(msg_id)].get("customer_name", ""),
+                    order_date=new_orders[processed_ids.index(msg_id)].get("order_date", ""),
+                ))
+            except Exception as e:
+                logger.error("Failed to mark %s as processed: %s", msg_id, e)
+
+        return {"status": "ok", "orders_appended": appended, "orders_skipped": skipped}
+
+    except Exception as e:
+        logger.error("💥 Webhook processing failed: %s", e, exc_info=True)
+        # Return 200 so Pub/Sub doesn't keep retrying on parse errors
+        return {"status": "error", "detail": str(e)}
+
+
+@app.post("/api/renew-gmail-watch")
+def renew_gmail_watch():
+    """Renew the Gmail push notification watch (expires every 7 days).
+    Call this from Cloud Scheduler once a day.
+    """
+    if not GMAIL_REFRESH_TOKEN:
+        raise HTTPException(status_code=503, detail="GMAIL_REFRESH_TOKEN not set")
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build as _build
+
+        GCP_PROJECT  = os.environ.get("GCP_PROJECT", "ordersbc-494213")
+        PUBSUB_TOPIC = f"projects/{GCP_PROJECT}/topics/gmail-orders"
+
+        creds = Credentials(
+            token=None,
+            refresh_token=GMAIL_REFRESH_TOKEN,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=GMAIL_CLIENT_ID,
+            client_secret=GMAIL_CLIENT_SECRET,
+            scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+        )
+        creds.refresh(Request())
+        svc = _build("gmail", "v1", credentials=creds, cache_discovery=False)
+        resp = svc.users().watch(
+            userId=INBOX_ACCOUNT,
+            body={"topicName": PUBSUB_TOPIC, "labelIds": ["INBOX"], "labelFilterBehavior": "INCLUDE"},
+        ).execute()
+        logger.info("✅ Gmail watch renewed — historyId=%s expiration=%s", resp.get("historyId"), resp.get("expiration"))
+        return {"status": "ok", "historyId": resp.get("historyId"), "expiration": resp.get("expiration")}
+    except Exception as e:
+        logger.error("💥 Failed to renew Gmail watch: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/health")
