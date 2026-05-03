@@ -44,8 +44,8 @@ STEPHEN_EMAIL = "7173783020@hellofax.com"
 INBOX_ACCOUNT = "bettercrafter1@gmail.com"
 
 # Gmail OAuth credentials (for webhook processing)
-GMAIL_CLIENT_ID     = os.environ.get("GMAIL_CLIENT_ID", "706034452884-8u5fq9rsmb33o52ltj5qp4gnv668v2gl.apps.googleusercontent.com")
-GMAIL_CLIENT_SECRET = os.environ.get("GMAIL_CLIENT_SECRET", "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")
+GMAIL_CLIENT_ID     = os.environ.get("GMAIL_CLIENT_ID", "")
+GMAIL_CLIENT_SECRET = os.environ.get("GMAIL_CLIENT_SECRET", "")
 GMAIL_REFRESH_TOKEN = os.environ.get("GMAIL_REFRESH_TOKEN", "")
 
 app = FastAPI(title="Order Automation System", version="1.0.0")
