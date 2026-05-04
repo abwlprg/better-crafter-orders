@@ -25,19 +25,18 @@ if env_file.exists():
             key, _, value = line.partition("=")
             os.environ.setdefault(key.strip(), value.strip())
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 
 
-class GenerateReportRequest(BaseModel):
-    orders: Optional[List[dict]] = None  # frontend can send orders directly
+class AppendRequest(BaseModel):
+    orders: Optional[List[dict]] = None  # frontend puede enviar orders directamente
 
 from functions.email_parser import PARSER_REGISTRY, get_parser
 from functions.gmail_client import GmailClient
-from functions.word_generator import WordReportGenerator
 
 # ── Hardcoded business constants ──────────────────
 STEPHEN_EMAIL = "7173783020@hellofax.com"
@@ -68,10 +67,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-TEMPLATE_PATH = Path(__file__).parent / "templates" / "stephen_template.docx"
-OUTPUT_DIR = Path(__file__).parent / "test_output"
-OUTPUT_DIR.mkdir(exist_ok=True)
 
 # Cache for fetched orders (avoid re-fetching Gmail every time)
 _cached_orders: list[dict] = []
@@ -277,51 +272,8 @@ def fetch_orders(start_date: str = None, end_date: str = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/generate-report")
-def generate_report(body: GenerateReportRequest = None):
-    """Generate a Word report from the cached orders.
-    
-    Orders can be sent in the POST body (preferred) or read from in-memory cache.
-    Sending in the body avoids issues with multiple Cloud Run instances.
-    """
-    logger.info("📝 generate_report called — body_orders=%s, cache=%d",
-                len(body.orders) if body and body.orders else "none",
-                len(_cached_orders))
-
-    # Prefer orders from request body (avoids cross-instance cache miss)
-    orders_to_use = (body.orders if body and body.orders else None) or _cached_orders
-
-    logger.info("📝 orders_to_use count: %d", len(orders_to_use))
-
-    if not orders_to_use:
-        logger.warning("⚠️ No orders available — cache empty and no body orders")
-        raise HTTPException(status_code=400, detail="No orders loaded. Fetch orders first.")
-
-    logger.info("📋 TEMPLATE_PATH: %s — exists=%s", TEMPLATE_PATH, TEMPLATE_PATH.exists())
-    if not TEMPLATE_PATH.exists():
-        raise HTTPException(status_code=500, detail=f"Template file not found: {TEMPLATE_PATH}")
-
-    try:
-        logger.info("📝 Generating Word report with %d orders...", len(orders_to_use))
-        generator = WordReportGenerator(str(TEMPLATE_PATH))
-        report_date = date.today()
-        path = generator.generate_daily_report(orders_to_use, report_date)
-        dest = OUTPUT_DIR / f"stephen_orders_{report_date.isoformat()}.docx"
-        dest.write_bytes(path.read_bytes())
-        logger.info("✅ Report saved: %s (%d orders)", dest.name, len(orders_to_use))
-        return {
-            "success": True,
-            "filename": dest.name,
-            "order_count": len(orders_to_use),
-            "date": report_date.isoformat(),
-        }
-    except Exception as e:
-        logger.error("💥 Report generation failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/api/append-to-onedrive")
-def append_to_onedrive(body: GenerateReportRequest = None):
+def append_to_onedrive(body: AppendRequest = None):
     """Append parsed orders to the existing OneDrive Word document.
 
     Downloads the live .docx from OneDrive, appends new order rows (skipping
@@ -368,19 +320,6 @@ def append_to_onedrive(body: GenerateReportRequest = None):
     except Exception as e:
         logger.error("💥 OneDrive append failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/download-report/{filename}")
-def download_report(filename: str):
-    """Download a generated Word report."""
-    file_path = OUTPUT_DIR / filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Report not found.")
-    return FileResponse(
-        path=str(file_path),
-        filename=filename,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
 
 
 @app.post("/api/gmail-webhook", status_code=200)
@@ -503,6 +442,87 @@ async def gmail_webhook(request: Request):
         logger.error("═" * 50)
         # Return 200 so Pub/Sub doesn't keep retrying on parse errors
         return {"status": "error", "detail": str(e)}
+
+
+@app.post("/api/daily-update")
+def daily_update(days: int = Query(default=2, ge=1, le=30, description="Cuántos días hacia atrás procesar")):
+    """Fetch emails from the last N days and append them to OneDrive.
+
+    - Llamado por Cloud Scheduler a las 2 AM (days=1 → solo ayer)
+    - Llamado manualmente para catch-up (days=2, 7, etc.)
+    Funciona en la madrugada cuando Leo tiene el archivo cerrado → sin 423 Locked.
+    """
+    if not GMAIL_REFRESH_TOKEN:
+        raise HTTPException(status_code=503, detail="GMAIL_REFRESH_TOKEN not set")
+
+    try:
+        from datetime import timedelta
+        from functions.email_parser import get_parser as _get_parser
+        from functions.onedrive_client import download_docx, upload_docx, get_file_name
+        from functions.word_generator import append_orders_to_existing_docx
+
+        start_date = (date.today() - timedelta(days=days)).isoformat()
+        end_date   = date.today().isoformat()
+
+        logger.info("═" * 50)
+        logger.info("🌙 DAILY UPDATE — last %d day(s): %s → %s", days, start_date, end_date)
+        logger.info("═" * 50)
+
+        gmail = GmailClient(
+            gmail_account=INBOX_ACCOUNT,
+            client_id=GMAIL_CLIENT_ID,
+            client_secret=GMAIL_CLIENT_SECRET,
+            refresh_token=GMAIL_REFRESH_TOKEN,
+        )
+        parser = _get_parser("stephen")
+
+        messages = gmail.list_supplier_messages(
+            supplier_email=STEPHEN_EMAIL,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        logger.info("📬 Found %d email(s) from Stephen in range %s → %s", len(messages), start_date, end_date)
+
+        orders: list[dict] = []
+        for msg in messages:
+            parsed = parser.parse(msg.body, pdf_text=msg.pdf_text or None)
+            if parsed and _is_valid_order(parsed):
+                orders.append({k: str(v).strip() for k, v in parsed.items()})
+                logger.info("  ✅ customer=%s item=%s", parsed.get("customer_name"), parsed.get("item_code"))
+            else:
+                logger.info("  ❌ msg_id=%s — skipped (no valid order)", msg.message_id[:12])
+
+        if not orders:
+            logger.info("ℹ️  No valid orders found in range — nothing to append")
+            return {"status": "ok", "range": f"{start_date} → {end_date}", "orders_appended": 0, "message": "No orders found in date range"}
+
+        file_name = get_file_name()
+        logger.info("📥 Downloading '%s' from OneDrive...", file_name)
+        docx_bytes = download_docx()
+
+        logger.info("✏️  Appending %d order(s) — duplicates skipped automatically...", len(orders))
+        updated, appended, skipped = append_orders_to_existing_docx(docx_bytes, orders)
+
+        if appended > 0:
+            logger.info("📤 Uploading updated document to OneDrive...")
+            upload_docx(updated)
+            logger.info("✅ Update done: +%d rows (%d duplicates skipped)", appended, skipped)
+        else:
+            logger.info("⏭️  All %d orders already in OneDrive — no upload needed", skipped)
+
+        logger.info("═" * 50)
+        logger.info("🏁 DAILY UPDATE DONE — range=%s→%s appended=%d skipped=%d", start_date, end_date, appended, skipped)
+        logger.info("═" * 50)
+        return {
+            "status": "ok",
+            "range": f"{start_date} → {end_date}",
+            "orders_found": len(orders),
+            "orders_appended": appended,
+            "orders_skipped": skipped,
+        }
+    except Exception as e:
+        logger.error("💥 Daily update failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/renew-gmail-watch")
