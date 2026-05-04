@@ -383,7 +383,7 @@ def download_report(filename: str):
     )
 
 
-@app.post("/api/gmail-webhook")
+@app.post("/api/gmail-webhook", status_code=200)
 async def gmail_webhook(request: Request):
     """Receive Gmail push notifications from Google Pub/Sub.
 
@@ -393,14 +393,20 @@ async def gmail_webhook(request: Request):
     import base64
     import json as _json
 
+    # Read raw bytes first — Pub/Sub may not send Content-Type: application/json
+    raw = await request.body()
+    logger.info("📩 Raw webhook body (%d bytes): %s", len(raw), raw[:200])
+
     try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+        body = _json.loads(raw)
+    except Exception as e:
+        logger.error("❌ Could not parse webhook body as JSON: %s — raw=%s", e, raw[:200])
+        return {"status": "ok"}  # Return 200 so Pub/Sub stops retrying
 
     # Pub/Sub wraps the payload in message.data (base64-encoded)
     encoded = body.get("message", {}).get("data", "")
     if not encoded:
+        logger.warning("⚠️  No message.data in webhook body: %s", body)
         return {"status": "no_data"}
 
     try:
@@ -408,7 +414,7 @@ async def gmail_webhook(request: Request):
         notification = _json.loads(decoded)
     except Exception as e:
         logger.error("Failed to decode Pub/Sub message: %s", e)
-        raise HTTPException(status_code=400, detail="Bad message data")
+        return {"status": "ok"}  # Return 200 so Pub/Sub stops retrying
 
     email_address = notification.get("emailAddress", "")
     history_id    = notification.get("historyId", "")
@@ -422,6 +428,7 @@ async def gmail_webhook(request: Request):
         return {"status": "skipped", "reason": "no_credentials"}
 
     try:
+        from datetime import date as _date
         from functions.email_parser import get_parser
         from functions.firestore_client import ProcessedEmailRecord, ProcessedEmailStore
         from functions.onedrive_client import download_docx, upload_docx
@@ -437,13 +444,27 @@ async def gmail_webhook(request: Request):
         store  = ProcessedEmailStore("processed_emails")
         parser = get_parser("stephen")
 
-        logger.info("📨 Fetching emails from Stephen (%s)...", STEPHEN_EMAIL)
+        # Fetch today's emails to catch any missed ones + the new one
+        today_str = _date.today().isoformat()
+        logger.info("📨 Fetching emails from Stephen (%s) since today (%s)...", STEPHEN_EMAIL, today_str)
         messages = gmail.list_supplier_messages(
             supplier_email=STEPHEN_EMAIL,
-            start_date=None,
+            start_date=today_str,
             end_date=None,
         )
-        logger.info("📬 Found %d total emails from Stephen", len(messages))
+        logger.info("📬 Found %d email(s) from Stephen today", len(messages))
+
+        # Also catch any unprocessed emails from the last 7 days as safety net
+        if len(messages) == 0:
+            logger.info("📨 No emails today — fetching last 7 days as catch-up...")
+            from datetime import timedelta
+            week_ago = (_date.today() - timedelta(days=7)).isoformat()
+            messages = gmail.list_supplier_messages(
+                supplier_email=STEPHEN_EMAIL,
+                start_date=week_ago,
+                end_date=None,
+            )
+            logger.info("📬 Found %d email(s) from last 7 days", len(messages))
 
         new_orders = []
         processed_ids = []
@@ -466,7 +487,7 @@ async def gmail_webhook(request: Request):
             processed_ids.append(msg.message_id)
 
         if not new_orders:
-            logger.info("ℹ️  No new parseable orders from webhook — nothing to append to OneDrive")
+            logger.info("ℹ️  No new parseable orders — nothing to append to OneDrive")
             return {"status": "ok", "orders_found": 0}
 
         logger.info("📥 Downloading OneDrive document...")
