@@ -428,9 +428,8 @@ async def gmail_webhook(request: Request):
         return {"status": "skipped", "reason": "no_credentials"}
 
     try:
-        from datetime import date as _date
+        from datetime import date as _date, timedelta
         from functions.email_parser import get_parser
-        from functions.firestore_client import ProcessedEmailRecord, ProcessedEmailStore
         from functions.onedrive_client import download_docx, upload_docx
         from functions.word_generator import append_orders_to_existing_docx
 
@@ -441,10 +440,9 @@ async def gmail_webhook(request: Request):
             client_secret=GMAIL_CLIENT_SECRET,
             refresh_token=GMAIL_REFRESH_TOKEN,
         )
-        store  = ProcessedEmailStore("processed_emails")
         parser = get_parser("stephen")
 
-        # Fetch today's emails to catch any missed ones + the new one
+        # Fetch today's emails first
         today_str = _date.today().isoformat()
         logger.info("📨 Fetching emails from Stephen (%s) since today (%s)...", STEPHEN_EMAIL, today_str)
         messages = gmail.list_supplier_messages(
@@ -454,10 +452,9 @@ async def gmail_webhook(request: Request):
         )
         logger.info("📬 Found %d email(s) from Stephen today", len(messages))
 
-        # Also catch any unprocessed emails from the last 7 days as safety net
+        # If nothing today, fetch last 7 days as safety net
         if len(messages) == 0:
             logger.info("📨 No emails today — fetching last 7 days as catch-up...")
-            from datetime import timedelta
             week_ago = (_date.today() - timedelta(days=7)).isoformat()
             messages = gmail.list_supplier_messages(
                 supplier_email=STEPHEN_EMAIL,
@@ -467,32 +464,25 @@ async def gmail_webhook(request: Request):
             logger.info("📬 Found %d email(s) from last 7 days", len(messages))
 
         new_orders = []
-        processed_ids = []
         for msg in messages:
-            already = store.is_processed(msg.message_id)
-            if already:
-                logger.debug("  ⏭️  msg_id=%s already processed — skipping", msg.message_id[:12])
-                continue
-            logger.info("  🔍 Parsing new msg_id=%s (body=%d chars, pdf=%d chars)",
+            logger.info("  🔍 Parsing msg_id=%s (body=%d chars, pdf=%d chars)",
                         msg.message_id[:12], len(msg.body), len(msg.pdf_text or ""))
             parsed = parser.parse(msg.body, pdf_text=msg.pdf_text or None)
             if not parsed or not parsed.get("item_code", "").strip():
-                logger.warning("  ❌ msg_id=%s — parser returned no valid order (result=%s)",
-                               msg.message_id[:12], parsed)
+                logger.warning("  ❌ msg_id=%s — no valid order parsed", msg.message_id[:12])
                 continue
             order = {k: str(v).strip() for k, v in parsed.items()}
             logger.info("  ✅ msg_id=%s → customer=%s item=%s date=%s",
                         msg.message_id[:12], order.get("customer_name"), order.get("item_code"), order.get("order_date"))
             new_orders.append(order)
-            processed_ids.append(msg.message_id)
 
         if not new_orders:
-            logger.info("ℹ️  No new parseable orders — nothing to append to OneDrive")
+            logger.info("ℹ️  No parseable orders found — nothing to append to OneDrive")
             return {"status": "ok", "orders_found": 0}
 
         logger.info("📥 Downloading OneDrive document...")
         docx_bytes = download_docx()
-        logger.info("✏️  Appending %d new order(s) to document...", len(new_orders))
+        logger.info("✏️  Appending %d order(s) — duplicates will be skipped automatically...", len(new_orders))
         updated, appended, skipped = append_orders_to_existing_docx(docx_bytes, new_orders)
 
         if appended > 0:
@@ -501,19 +491,6 @@ async def gmail_webhook(request: Request):
             logger.info("✅ OneDrive updated: +%d rows appended, %d duplicates skipped", appended, skipped)
         else:
             logger.info("⏭️  All %d orders already in OneDrive — no upload needed", skipped)
-
-        # Mark emails as processed
-        for msg_id in processed_ids:
-            try:
-                idx = processed_ids.index(msg_id)
-                store.mark_processed(ProcessedEmailRecord(
-                    message_id=msg_id,
-                    customer_name=new_orders[idx].get("customer_name", ""),
-                    order_date=new_orders[idx].get("order_date", ""),
-                ))
-                logger.info("🗂️  Marked msg_id=%s as processed", msg_id[:12])
-            except Exception as e:
-                logger.error("⚠️  Failed to mark msg_id=%s as processed: %s", msg_id[:12], e)
 
         logger.info("═" * 50)
         logger.info("🏁 WEBHOOK DONE — appended=%d skipped=%d", appended, skipped)
