@@ -444,6 +444,48 @@ async def gmail_webhook(request: Request):
         return {"status": "error", "detail": str(e)}
 
 
+@app.post("/api/clear-onedrive-rows")
+def clear_onedrive_rows(
+    start_date: str = Query(default=None, description="Fecha inicio MM/DD/YYYY — omitir para borrar todo"),
+    end_date:   str = Query(default=None, description="Fecha fin   MM/DD/YYYY — omitir para borrar todo"),
+):
+    """Borra filas de datos del documento OneDrive en el rango de fechas dado.
+
+    Ejemplos:
+      Borrar todo:            POST /api/clear-onedrive-rows
+      Solo un mes:            POST /api/clear-onedrive-rows?start_date=04/14/2026&end_date=05/04/2026
+
+    El header del documento siempre se preserva.
+    Después de llamar este endpoint, usar /api/daily-update?days=N para reescribir en orden correcto.
+    """
+    try:
+        from functions.onedrive_client import download_docx, upload_docx, get_file_name
+        from functions.word_generator import clear_rows_from_docx
+
+        file_name = get_file_name()
+        logger.info("═" * 50)
+        logger.info("🗑️  CLEAR ROWS — file=%s range=%s → %s", file_name, start_date or "*", end_date or "*")
+        logger.info("═" * 50)
+
+        docx_bytes = download_docx()
+        updated_bytes, deleted = clear_rows_from_docx(docx_bytes, start_date=start_date, end_date=end_date)
+
+        if deleted == 0:
+            logger.info("ℹ️  No rows matched the date range — nothing deleted")
+            return {"status": "ok", "rows_deleted": 0, "message": "No rows matched"}
+
+        upload_docx(updated_bytes)
+        logger.info("✅ Deleted %d rows and uploaded updated document", deleted)
+        return {
+            "status": "ok",
+            "rows_deleted": deleted,
+            "range": f"{start_date or '*'} → {end_date or '*'}",
+        }
+    except Exception as e:
+        logger.error("💥 clear-onedrive-rows failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/daily-update")
 def daily_update(days: int = Query(default=2, ge=1, le=30, description="Cuántos días hacia atrás procesar")):
     """Fetch emails from the last N days and append them to OneDrive.

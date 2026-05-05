@@ -227,6 +227,75 @@ def append_orders_to_existing_docx(docx_bytes: bytes, orders: list[dict[str, str
     return buf.read(), appended, skipped
 
 
+def clear_rows_from_docx(docx_bytes: bytes, start_date: str = None, end_date: str = None) -> tuple[bytes, int]:
+    """
+    Delete data rows from the first table of a .docx whose order_date falls
+    within [start_date, end_date] (inclusive, format MM/DD/YYYY or MM/DD).
+    The header row (row 0) is always preserved.
+
+    If neither date is given, ALL data rows are deleted.
+
+    Returns:
+        Tuple of (updated_bytes, deleted_count).
+    """
+    import io
+    from lxml import etree
+
+    doc = Document(io.BytesIO(docx_bytes))
+    if not doc.tables:
+        raise ValueError("The OneDrive document must contain at least one table")
+
+    table = doc.tables[0]
+    deleted = 0
+
+    def _parse_date(val: str):
+        """Parse MM/DD/YYYY or MM/DD into (month, day, year). Year defaults to today's year."""
+        val = val.strip()
+        parts = val.split("/")
+        try:
+            if len(parts) == 3:
+                return (int(parts[2]), int(parts[0]), int(parts[1]))  # (year, month, day)
+            elif len(parts) == 2:
+                return (datetime.today().year, int(parts[0]), int(parts[1]))
+        except (ValueError, IndexError):
+            pass
+        return None
+
+    def _in_range(order_date: str) -> bool:
+        if not start_date and not end_date:
+            return True
+        d = _parse_date(order_date)
+        if d is None:
+            return False
+        if start_date:
+            s = _parse_date(start_date)
+            if s and d < s:
+                return False
+        if end_date:
+            e = _parse_date(end_date)
+            if e and d > e:
+                return False
+        return True
+
+    # Iterate rows in reverse (skip row 0 = header) to safely delete
+    rows = table.rows
+    for i in range(len(rows) - 1, 0, -1):  # reverse, skip header
+        cells = [c.text.strip() for c in rows[i].cells]
+        order_date = cells[0] if cells else ""
+        if not order_date:  # skip empty rows
+            continue
+        if _in_range(order_date):
+            tr = rows[i]._tr
+            tr.getparent().remove(tr)
+            deleted += 1
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    logger.info("clear_rows_from_docx: deleted=%d (range=%s → %s)", deleted, start_date or "*", end_date or "*")
+    return buf.read(), deleted
+
+
 def build_generated_timestamp() -> str:
     """Build UTC timestamp string for diagnostics and logging."""
     return datetime.now(timezone.utc).isoformat()
