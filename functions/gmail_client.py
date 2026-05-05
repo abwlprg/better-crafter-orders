@@ -110,6 +110,12 @@ class GmailClient:
                 break
 
         logger.info("  📬 Total message refs: %d (across %d pages)", len(message_refs), page_num)
+
+        # Gmail returns newest-first. Reverse so we process oldest→newest,
+        # preserving email arrival order within the same date in the output.
+        message_refs.reverse()
+        logger.info("  🔄 Reversed to oldest-first order")
+
         messages: list[GmailMessage] = []
 
         for i, ref in enumerate(message_refs):
