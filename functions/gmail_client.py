@@ -116,7 +116,9 @@ class GmailClient:
         message_refs.reverse()
         logger.info("  🔄 Reversed to oldest-first order")
 
-        messages: list[GmailMessage] = []
+        # ── Fetch all matching messages ──────────────────────────────────────
+        # Key: thread_id → list of (internalDate, GmailMessage)
+        thread_messages: dict[str, list[tuple[int, GmailMessage]]] = {}
 
         for i, ref in enumerate(message_refs):
             message_id = ref.get("id")
@@ -135,6 +137,8 @@ class GmailClient:
 
             decoded_body = self._extract_preferred_body(payload.get("payload", {}))
             pdf_text, pdf_filenames = self._extract_pdf_attachments(payload, message_id)
+            internal_date = int(payload.get("internalDate", 0))
+            thread_id = payload.get("threadId", "")
 
             # Extract headers for diagnostic logging
             headers = {h["name"].lower(): h["value"] for h in payload.get("payload", {}).get("headers", [])}
@@ -147,21 +151,61 @@ class GmailClient:
             if headers.get("bcc"):
                 logger.info("       🤫 Bcc:     %s", headers["bcc"])
             logger.info("       🆔 Delivered-To: %s", headers.get("delivered-to", "?"))
+            logger.info("       🧵 Thread:  %s", thread_id[:8] if thread_id else "?")
 
             body_len = len(decoded_body)
             pdf_info = f", 📎 {len(pdf_filenames)} PDF(s): {pdf_filenames}" if pdf_filenames else ""
             logger.info("       body=%d chars%s", body_len, pdf_info)
 
-            messages.append(
-                GmailMessage(
-                    message_id=message_id,
-                    thread_id=payload.get("threadId", ""),
-                    body=decoded_body,
-                    pdf_text=pdf_text,
-                    pdf_filenames=pdf_filenames,
-                )
+            msg = GmailMessage(
+                message_id=message_id,
+                thread_id=thread_id,
+                body=decoded_body,
+                pdf_text=pdf_text,
+                pdf_filenames=pdf_filenames,
             )
 
+            if thread_id not in thread_messages:
+                thread_messages[thread_id] = []
+            thread_messages[thread_id].append((internal_date, msg))
+
+        # ── Deduplicate: keep only the FIRST (oldest) message per thread ────
+        # Supplier follow-up questions or replies in the same thread should NOT
+        # override the original order email.  We merge PDF text from ALL messages
+        # in the thread so attachments sent in later replies are still captured.
+        messages: list[GmailMessage] = []
+
+        for thread_id, dated_msgs in thread_messages.items():
+            # Sort by internalDate ascending → index 0 is the original email
+            dated_msgs.sort(key=lambda t: t[0])
+            first_msg = dated_msgs[0][1]
+
+            if len(dated_msgs) > 1:
+                logger.info(
+                    "  🧵 Thread %s has %d messages — using first (oldest) for order body, "
+                    "merging PDFs from all %d messages",
+                    thread_id[:8], len(dated_msgs), len(dated_msgs),
+                )
+                # Collect PDF text from every message in the thread
+                all_pdf_texts: list[str] = []
+                all_pdf_filenames: list[str] = []
+                for _, msg in dated_msgs:
+                    if msg.pdf_text:
+                        all_pdf_texts.append(msg.pdf_text)
+                    all_pdf_filenames.extend(msg.pdf_filenames)
+
+                combined_pdf_text = "\n\n---\n\n".join(all_pdf_texts)
+                first_msg = GmailMessage(
+                    message_id=first_msg.message_id,
+                    thread_id=first_msg.thread_id,
+                    body=first_msg.body,
+                    pdf_text=combined_pdf_text,
+                    pdf_filenames=all_pdf_filenames,
+                )
+
+            messages.append(first_msg)
+
+        logger.info("  ✅ After thread deduplication: %d unique threads to process", len(messages))
         return messages
 
     @staticmethod
