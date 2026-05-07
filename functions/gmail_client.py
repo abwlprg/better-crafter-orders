@@ -69,14 +69,25 @@ class GmailClient:
         logger.info("  ✅ Gmail service built")
 
     def list_supplier_messages(self, supplier_email: str, start_date: str = None, end_date: str = None) -> list[GmailMessage]:
-        """Fetch and decode sent emails to a supplier within a date range.
+        """Fetch supplier order emails using threads.list + threads.get.
+
+        Strategy (fixes the "blank customer name" bug):
+        - Use threads.list so that a thread is returned if ANY message in it
+          matches the query (e.g. the PDF is only in a reply, not the original).
+        - For each thread, fetch ALL messages via threads.get.
+        - Use the FIRST (oldest) message body as the order data source.
+        - Collect PDFs from EVERY message in the thread.
+
+        This ensures we never parse a follow-up reply body instead of the
+        original order email, even when the PDF arrives in a later reply.
+
         start_date / end_date: 'YYYY-MM-DD' strings, both optional.
         """
         search_query = self._build_search_query(supplier_email, start_date, end_date)
-        logger.info("  🔎 Gmail query: %s", search_query)
+        logger.info("  🔎 Gmail threads query: %s", search_query)
 
-        # Paginate through ALL results (Gmail defaults to 100 per page, max 500)
-        message_refs: list[dict] = []
+        # ── Step 1: list matching thread IDs ────────────────────────────────
+        thread_refs: list[dict] = []
         page_token: str | None = None
         page_num = 0
 
@@ -91,121 +102,101 @@ class GmailClient:
                 list_kwargs["pageToken"] = page_token
 
             listing = self._execute_with_retry(
-                "users.messages.list",
+                "users.threads.list",
                 lambda kw=list_kwargs: self._service.users()
-                .messages()
+                .threads()
                 .list(**kw)
                 .execute(),
             )
 
-            batch = listing.get("messages", [])
-            message_refs.extend(batch)
+            batch = listing.get("threads", [])
+            thread_refs.extend(batch)
             logger.info(
-                "  📄 Page %d: got %d messages (total so far: %d)",
-                page_num, len(batch), len(message_refs),
+                "  📄 Page %d: got %d threads (total so far: %d)",
+                page_num, len(batch), len(thread_refs),
             )
 
             page_token = listing.get("nextPageToken")
             if not page_token:
                 break
 
-        logger.info("  📬 Total message refs: %d (across %d pages)", len(message_refs), page_num)
+        logger.info("  📬 Total thread refs: %d (across %d pages)", len(thread_refs), page_num)
 
-        # Gmail returns newest-first. Reverse so we process oldest→newest,
-        # preserving email arrival order within the same date in the output.
-        message_refs.reverse()
-        logger.info("  🔄 Reversed to oldest-first order")
+        # ── Step 2: fetch each thread and extract first-message body + all PDFs
+        messages: list[GmailMessage] = []
 
-        # ── Fetch all matching messages ──────────────────────────────────────
-        # Key: thread_id → list of (internalDate, GmailMessage)
-        thread_messages: dict[str, list[tuple[int, GmailMessage]]] = {}
-
-        for i, ref in enumerate(message_refs):
-            message_id = ref.get("id")
-            if not message_id:
+        for i, ref in enumerate(thread_refs):
+            thread_id = ref.get("id")
+            if not thread_id:
                 continue
 
-            logger.info("  📥 [%d/%d] Fetching message %s...", i + 1, len(message_refs), message_id[:8])
+            logger.info("  🧵 [%d/%d] Fetching thread %s...", i + 1, len(thread_refs), thread_id[:8])
 
-            payload = self._execute_with_retry(
-                "users.messages.get",
-                lambda message_id=message_id: self._service.users()
-                .messages()
-                .get(userId=self._gmail_account, id=message_id, format="full")
+            thread_data = self._execute_with_retry(
+                "users.threads.get",
+                lambda tid=thread_id: self._service.users()
+                .threads()
+                .get(userId=self._gmail_account, id=tid, format="full")
                 .execute(),
             )
 
-            decoded_body = self._extract_preferred_body(payload.get("payload", {}))
-            pdf_text, pdf_filenames = self._extract_pdf_attachments(payload, message_id)
-            internal_date = int(payload.get("internalDate", 0))
-            thread_id = payload.get("threadId", "")
+            # threads.get returns messages already sorted oldest→newest
+            thread_msgs: list[dict] = thread_data.get("messages", [])
+            if not thread_msgs:
+                logger.warning("       ⚠️  Thread %s has no messages — skipping", thread_id[:8])
+                continue
 
-            # Extract headers for diagnostic logging
-            headers = {h["name"].lower(): h["value"] for h in payload.get("payload", {}).get("headers", [])}
+            first_msg_payload = thread_msgs[0]
+            first_message_id  = first_msg_payload.get("id", "")
+
+            # Log headers of FIRST message
+            headers = {
+                h["name"].lower(): h["value"]
+                for h in first_msg_payload.get("payload", {}).get("headers", [])
+            }
             logger.info("       📅 Date:    %s", headers.get("date", "?"))
             logger.info("       📝 Subject: %s", headers.get("subject", "?"))
             logger.info("       👤 From:    %s", headers.get("from", "?"))
             logger.info("       📨 To:      %s", headers.get("to", "?"))
             if headers.get("cc"):
                 logger.info("       📋 Cc:      %s", headers["cc"])
-            if headers.get("bcc"):
-                logger.info("       🤫 Bcc:     %s", headers["bcc"])
-            logger.info("       🆔 Delivered-To: %s", headers.get("delivered-to", "?"))
-            logger.info("       🧵 Thread:  %s", thread_id[:8] if thread_id else "?")
+            logger.info("       📨 Thread msgs total: %d", len(thread_msgs))
 
-            body_len = len(decoded_body)
-            pdf_info = f", 📎 {len(pdf_filenames)} PDF(s): {pdf_filenames}" if pdf_filenames else ""
-            logger.info("       body=%d chars%s", body_len, pdf_info)
+            # Body always from the FIRST (original order) message
+            decoded_body = self._extract_preferred_body(first_msg_payload.get("payload", {}))
+            logger.info("       body=%d chars (from msg #1 of thread)", len(decoded_body))
 
-            msg = GmailMessage(
-                message_id=message_id,
-                thread_id=thread_id,
-                body=decoded_body,
-                pdf_text=pdf_text,
-                pdf_filenames=pdf_filenames,
-            )
+            # PDFs collected from ALL messages in the thread
+            all_pdf_texts:     list[str] = []
+            all_pdf_filenames: list[str] = []
 
-            if thread_id not in thread_messages:
-                thread_messages[thread_id] = []
-            thread_messages[thread_id].append((internal_date, msg))
+            for msg_idx, msg_payload in enumerate(thread_msgs):
+                msg_id  = msg_payload.get("id", "")
+                pdf_text, pdf_filenames = self._extract_pdf_attachments(msg_payload, msg_id)
+                if pdf_text:
+                    all_pdf_texts.append(pdf_text)
+                all_pdf_filenames.extend(pdf_filenames)
+                if pdf_filenames:
+                    logger.info(
+                        "       📎 msg #%d (%s): %d PDF(s): %s",
+                        msg_idx + 1, msg_id[:8], len(pdf_filenames), pdf_filenames,
+                    )
 
-        # ── Deduplicate: keep only the FIRST (oldest) message per thread ────
-        # Supplier follow-up questions or replies in the same thread should NOT
-        # override the original order email.  We merge PDF text from ALL messages
-        # in the thread so attachments sent in later replies are still captured.
-        messages: list[GmailMessage] = []
+            combined_pdf_text = "\n\n---\n\n".join(all_pdf_texts)
 
-        for thread_id, dated_msgs in thread_messages.items():
-            # Sort by internalDate ascending → index 0 is the original email
-            dated_msgs.sort(key=lambda t: t[0])
-            first_msg = dated_msgs[0][1]
-
-            if len(dated_msgs) > 1:
-                logger.info(
-                    "  🧵 Thread %s has %d messages — using first (oldest) for order body, "
-                    "merging PDFs from all %d messages",
-                    thread_id[:8], len(dated_msgs), len(dated_msgs),
-                )
-                # Collect PDF text from every message in the thread
-                all_pdf_texts: list[str] = []
-                all_pdf_filenames: list[str] = []
-                for _, msg in dated_msgs:
-                    if msg.pdf_text:
-                        all_pdf_texts.append(msg.pdf_text)
-                    all_pdf_filenames.extend(msg.pdf_filenames)
-
-                combined_pdf_text = "\n\n---\n\n".join(all_pdf_texts)
-                first_msg = GmailMessage(
-                    message_id=first_msg.message_id,
-                    thread_id=first_msg.thread_id,
-                    body=first_msg.body,
+            messages.append(
+                GmailMessage(
+                    message_id=first_message_id,
+                    thread_id=thread_id,
+                    body=decoded_body,
                     pdf_text=combined_pdf_text,
                     pdf_filenames=all_pdf_filenames,
                 )
+            )
 
-            messages.append(first_msg)
-
-        logger.info("  ✅ After thread deduplication: %d unique threads to process", len(messages))
+        # Preserve oldest-first order (threads.list returns newest-first)
+        messages.reverse()
+        logger.info("  ✅ Processed %d threads (oldest-first)", len(messages))
         return messages
 
     @staticmethod

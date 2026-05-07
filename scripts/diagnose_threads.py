@@ -1,23 +1,19 @@
 """
-Diagnóstico de hilos con múltiples mensajes.
+Diagnóstico de hilos: muestra qué cuerpo usaría el sistema para cada pedido.
 
-Busca correos enviados a Stephen donde el mismo thread tiene >1 mensaje,
-y muestra:
-  - Qué cuerpo habría procesado el sistema ANTES del fix (cualquier mensaje)
-  - Qué cuerpo procesará DESPUÉS del fix (el más antiguo del hilo)
-  - Si el parser extrae datos del primer mensaje correctamente
+Usa threads.list + threads.get (igual que el fix) para mostrar:
+  - Cuántos mensajes tiene cada hilo
+  - Qué cuerpo usaría (siempre msg #1)
+  - Si el parser encuentra los datos del pedido
 
 Uso:
-    cd /Users/1di/order_system_automatition/scripts
-    /opt/homebrew/opt/python@3.11/bin/python3.11 diagnose_threads.py [días_hacia_atrás]
-
-Default: 30 días.
+    cd ~/better-crafter-orders
+    python3 scripts/diagnose_threads.py [días_hacia_atrás]
 """
 
 from __future__ import annotations
 
 import base64
-import math
 import os
 import re
 import sys
@@ -84,18 +80,31 @@ def decode_body(payload: dict) -> str:
     return find_plain(payload) or find_html(payload) or ""
 
 
+def get_header(msg: dict, name: str) -> str:
+    for h in msg.get("payload", {}).get("headers", []):
+        if h["name"].lower() == name.lower():
+            return h["value"]
+    return "?"
+
+
+def has_pdf(msg: dict) -> bool:
+    def _scan(p):
+        if p.get("mimeType") == "application/pdf" or (p.get("filename", "").lower().endswith(".pdf")):
+            return True
+        return any(_scan(c) for c in p.get("parts", []) or [])
+    return _scan(msg.get("payload", {}))
+
+
 SIMPLE_PATTERNS = {
     "order_date":    re.compile(r"^\s*order\s*date\s*:\s*(.+?)\s*$",    re.I | re.M),
+    "customer_name": re.compile(r"^\s*customer\s*info\s*:\s*(.+?)\s*$", re.I | re.M),
     "color":         re.compile(r"^\s*color\s*:\s*(.+?)\s*$",           re.I | re.M),
     "ship_by":       re.compile(r"^\s*ship\s*by\s*:\s*(.+?)\s*$",       re.I | re.M),
-    "customer_name": re.compile(r"^\s*customer\s*info\s*:\s*(.+?)\s*$", re.I | re.M),
-    "quantity":      re.compile(r"^\s*quantity\s*:\s*(.+?)\s*$",        re.I | re.M),
 }
 ITEM_CODE_RE = re.compile(r"^\s*item\s*:\s*(\d[\w]*)\s*$", re.I | re.M)
 
 
 def quick_parse(body: str) -> dict:
-    """Quick field extraction to show what the parser would get."""
     result = {}
     for key, pat in SIMPLE_PATTERNS.items():
         m = pat.search(body)
@@ -109,9 +118,9 @@ def is_valid(fields: dict) -> bool:
     return bool(fields.get("customer_name")) and bool(fields.get("item_code") or fields.get("order_date"))
 
 
-# ── Fetch messages ─────────────────────────────────────────────────────────
+# ── Fetch threads ──────────────────────────────────────────────────────────
 print(f"\n{'═'*72}")
-print(f"  DIAGNÓSTICO DE HILOS — Múltiples mensajes por thread")
+print(f"  DIAGNÓSTICO DE HILOS (threads.list + threads.get)")
 print(f"  Cuenta  : {GMAIL_ACCOUNT}")
 print(f"  A       : {SUPPLIER_EMAIL}")
 print(f"  Período : últimos {DAYS_BACK} días")
@@ -125,126 +134,115 @@ query = (
 )
 print(f"🔍 Query: {query}\n")
 
-refs = []
+thread_refs = []
 page_token = None
 while True:
     kw = {"userId": GMAIL_ACCOUNT, "q": query, "maxResults": 500}
     if page_token:
         kw["pageToken"] = page_token
-    listing = service.users().messages().list(**kw).execute()
-    refs.extend(listing.get("messages", []))
+    listing = service.users().threads().list(**kw).execute()
+    thread_refs.extend(listing.get("threads", []))
     page_token = listing.get("nextPageToken")
     if not page_token:
         break
 
-print(f"📬 Referencias encontradas: {len(refs)}\n")
-print("Descargando payloads", end="", flush=True)
+print(f"📬 Hilos encontrados: {len(thread_refs)}\n")
+print("Descargando threads", end="", flush=True)
 
-# group by thread
-thread_data: dict[str, list[dict]] = {}   # thread_id → list of full payloads
-
-for i, ref in enumerate(refs):
+threads_data = []
+for i, ref in enumerate(thread_refs):
     try:
-        payload = service.users().messages().get(
+        td = service.users().threads().get(
             userId=GMAIL_ACCOUNT, id=ref["id"], format="full"
         ).execute()
-        tid = payload.get("threadId", ref["id"])
-        thread_data.setdefault(tid, [])
-        thread_data[tid].append(payload)
+        threads_data.append(td)
         sys.stdout.write(".")
         sys.stdout.flush()
         if (i + 1) % 50 == 0:
-            sys.stdout.write(f" {i+1}/{len(refs)}\n")
+            sys.stdout.write(f" {i+1}/{len(thread_refs)}\n")
         time.sleep(0.05)
     except Exception as exc:
-        print(f"\n⚠️  Error fetching {ref['id']}: {exc}")
+        print(f"\n⚠️  Error fetching thread {ref['id']}: {exc}")
 
-print(f"\n\n✅ Descargados {len(refs)} mensajes en {len(thread_data)} hilos únicos\n")
+print(f"\n\n✅ Descargados {len(threads_data)} hilos completos\n")
 
-# ── Analyse threads ────────────────────────────────────────────────────────
-multi_threads = {tid: msgs for tid, msgs in thread_data.items() if len(msgs) > 1}
-single_threads = {tid: msgs for tid, msgs in thread_data.items() if len(msgs) == 1}
+# ── Analyse ────────────────────────────────────────────────────────────────
+multi_msg_threads = [t for t in threads_data if len(t.get("messages", [])) > 1]
+single_msg_threads = [t for t in threads_data if len(t.get("messages", [])) == 1]
 
 print(f"{'─'*72}")
-print(f"  📊 Hilos con 1 mensaje  : {len(single_threads)}")
-print(f"  ⚠️  Hilos con >1 mensaje : {len(multi_threads)}  ← ESTOS SON EL PROBLEMA REPORTADO")
+print(f"  📊 Hilos con 1 mensaje  : {len(single_msg_threads)}")
+print(f"  ⚠️  Hilos con >1 mensaje : {len(multi_msg_threads)}  ← posibles afectados")
 print(f"{'─'*72}\n")
 
-if not multi_threads:
-    print("🎉 No se encontraron hilos con múltiples mensajes en el período seleccionado.")
-    print(f"   Prueba con un período mayor: python3 diagnose_threads.py 60")
-    sys.exit(0)
+# Check single-message threads that fail to parse (also a problem)
+single_failures = []
+for t in single_msg_threads:
+    msgs = t.get("messages", [])
+    body = decode_body(msgs[0].get("payload", {}))
+    if not is_valid(quick_parse(body)):
+        single_failures.append((t, msgs[0], body))
 
-# ── Detailed report for multi-message threads ──────────────────────────────
-print(f"{'═'*72}")
-print(f"  DETALLE DE HILOS CON MÚLTIPLES MENSAJES")
-print(f"{'═'*72}\n")
+print(f"  ❌ Hilos de 1 msg que fallan el parse: {len(single_failures)}")
+print(f"{'─'*72}\n")
 
-problems_fixed = 0
-problems_total = 0
+# ── Detail: multi-message threads ─────────────────────────────────────────
+if multi_msg_threads:
+    print(f"{'═'*72}")
+    print(f"  DETALLE — HILOS CON MÚLTIPLES MENSAJES")
+    print(f"{'═'*72}\n")
 
-for thread_idx, (tid, msgs) in enumerate(multi_threads.items(), 1):
-    # Sort by internalDate ascending (oldest first) — SAME as the fix
-    msgs_sorted = sorted(msgs, key=lambda m: int(m.get("internalDate", 0)))
-
-    first_msg  = msgs_sorted[0]
-    other_msgs = msgs_sorted[1:]
-
-    first_body  = decode_body(first_msg.get("payload", {}))
-    first_fields = quick_parse(first_body)
-
-    # Extract subject/date from headers
-    def get_header(msg, name):
-        for h in msg.get("payload", {}).get("headers", []):
-            if h["name"].lower() == name.lower():
-                return h["value"]
-        return "?"
-
-    print(f"{'─'*72}")
-    print(f"  HILO #{thread_idx}  ID: {tid[:12]}...")
-    print(f"  Mensajes en el hilo: {len(msgs)}")
-    print()
-
-    for mi, m in enumerate(msgs_sorted):
-        body = decode_body(m.get("payload", {}))
-        fields = quick_parse(body)
-        label = "🟢 ORIGINAL (el que el fix usa)" if mi == 0 else f"🔴 RESPUESTA #{mi} (el fix LO IGNORA)"
-        print(f"  [{mi+1}] {label}")
-        print(f"       Message-ID : {m.get('id', '?')}")
-        print(f"       Date       : {get_header(m, 'date')}")
-        print(f"       Subject    : {get_header(m, 'subject')}")
-        print(f"       Body ({len(body)} chars) — primeras 3 líneas:")
-        for line in body.splitlines()[:3]:
-            if line.strip():
-                print(f"         {line.strip()}")
-        print(f"       Campos encontrados:")
-        for k, v in fields.items():
-            status = "✅" if v else "❌"
-            print(f"         {status} {k}: {v or '(vacío)'}")
+    for ti, t in enumerate(multi_msg_threads, 1):
+        msgs = t.get("messages", [])  # already oldest→newest per API
+        print(f"{'─'*72}")
+        print(f"  HILO #{ti}  ({len(msgs)} mensajes)")
         print()
 
-    # Evaluate if fix helps
-    first_valid = is_valid(first_fields)
-    problems_total += 1
-    if first_valid:
-        problems_fixed += 1
-        verdict = "✅ FIX FUNCIONA — El primer email tiene los datos del pedido"
-    else:
-        # Check if any other message was better
-        any_other_valid = any(is_valid(quick_parse(decode_body(m.get("payload", {})))) for m in other_msgs)
-        if any_other_valid:
-            verdict = "⚠️  ATENCIÓN — El primer email NO tiene datos pero uno posterior sí (caso inusual)"
+        for mi, msg in enumerate(msgs):
+            body = decode_body(msg.get("payload", {}))
+            fields = quick_parse(body)
+            pdf = "📎 tiene PDF" if has_pdf(msg) else "  sin PDF"
+            label = "🟢 USAR ESTE (msg #1)" if mi == 0 else f"🔴 ignorar (msg #{mi+1})"
+            print(f"  [{mi+1}] {label}  {pdf}")
+            print(f"       Date    : {get_header(msg, 'date')}")
+            print(f"       Subject : {get_header(msg, 'subject')}")
+            body_preview = " | ".join(l.strip() for l in body.splitlines() if l.strip())[:120]
+            print(f"       Body    : {body_preview or '(vacío)'}")
+            for k, v in fields.items():
+                s = "✅" if v else "❌"
+                print(f"         {s} {k}: {v or '(vacío)'}")
+            print()
+
+        # Verdict
+        first_body = decode_body(msgs[0].get("payload", {}))
+        if is_valid(quick_parse(first_body)):
+            print(f"  ✅ FIX OK — msg #1 tiene datos válidos del pedido")
         else:
-            verdict = "ℹ️  Ningún mensaje del hilo tiene datos completos del pedido"
+            # Check if PDF is only in a later message
+            first_has_pdf = has_pdf(msgs[0])
+            later_has_pdf = any(has_pdf(m) for m in msgs[1:])
+            if not first_has_pdf and later_has_pdf:
+                print(f"  ⚠️  PDF está en reply, no en original — parser usará body de msg #1 + PDF de reply")
+            else:
+                print(f"  ❌ msg #1 no tiene datos parseables — revisar manualmente")
+        print()
 
-    print(f"  VEREDICTO: {verdict}")
-    print()
+# ── Detail: single-message parse failures ─────────────────────────────────
+if single_failures:
+    print(f"\n{'═'*72}")
+    print(f"  HILOS DE 1 MENSAJE QUE FALLAN EL PARSE ({len(single_failures)})")
+    print(f"{'═'*72}\n")
+    for t, msg, body in single_failures[:10]:  # show max 10
+        print(f"  ID: {msg.get('id','?')}  Date: {get_header(msg,'date')}")
+        print(f"  Subject: {get_header(msg,'subject')}")
+        body_preview = " | ".join(l.strip() for l in body.splitlines() if l.strip())[:150]
+        print(f"  Body: {body_preview or '(vacío)'}")
+        fields = quick_parse(body)
+        for k, v in fields.items():
+            s = "✅" if v else "❌"
+            print(f"    {s} {k}: {v or ''}")
+        print()
 
-# ── Summary ────────────────────────────────────────────────────────────────
-print(f"{'═'*72}")
-print(f"  RESUMEN FINAL")
-print(f"{'─'*72}")
-print(f"  Hilos con múltiples mensajes : {problems_total}")
-print(f"  Hilos donde el fix ayuda     : {problems_fixed} ✅")
-print(f"  Hilos con posible problema   : {problems_total - problems_fixed} ⚠️")
+print(f"\n{'═'*72}")
+print(f"  FIN DEL DIAGNÓSTICO")
 print(f"{'═'*72}\n")
