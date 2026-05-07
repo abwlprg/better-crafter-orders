@@ -231,9 +231,12 @@ class GmailClient:
         query = (
             f"deliveredto:{inbox_account} "
             f"to:{supplier_email} "
-            f"has:attachment filename:pdf "
             f"{date_part.strip()}"
         )
+        # NOTE: We intentionally do NOT filter by `has:attachment filename:pdf`.
+        # Some legitimate orders are sent as plain text without a PDF attachment
+        # (e.g. when the label is sent later in a separate email). Filtering by
+        # PDF would silently drop those orders. The parser handles both cases.
         logger.info("  🛠️  Building query:")
         logger.info("       inbox      = %s", inbox_account)
         logger.info("       supplier   = %s", supplier_email)
