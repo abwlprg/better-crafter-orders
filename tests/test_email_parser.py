@@ -45,6 +45,27 @@ class TestStephenParser(unittest.TestCase):
         parsed = self.parser.parse("Hello, this is not an order")
         self.assertIsNone(parsed)
 
+    def test_parse_multi_item_email_returns_one_row_per_item(self) -> None:
+        """Extract multiple item rows from one supplier email."""
+        email_body = """
+        Order date: 04/08
+        Item: 200
+        Item: tube feeder
+        Item: 300
+        Item: suet feeder
+        Customer info: jeff brand
+        """
+
+        rows = self.parser.parse(email_body)
+
+        self.assertIsNotNone(rows)
+        assert rows is not None
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["item_code"], "200")
+        self.assertEqual(rows[0]["item_name"], "tube feeder")
+        self.assertEqual(rows[1]["item_code"], "300")
+        self.assertEqual(rows[1]["item_name"], "suet feeder")
+
 
 if __name__ == "__main__":
     unittest.main()
