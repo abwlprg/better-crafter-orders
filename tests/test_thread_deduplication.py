@@ -5,7 +5,8 @@ from __future__ import annotations
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import MagicMock
 
 
 # ── Stub heavy external dependencies so we can import gmail_client without
@@ -30,6 +31,7 @@ for mod_name in [
 sys.modules["google.auth.transport.requests"].Request = MagicMock()
 sys.modules["google.oauth2.credentials"].Credentials = MagicMock()
 sys.modules["googleapiclient.discovery"].build = MagicMock()
+sys.modules["googleapiclient.discovery"].Resource = MagicMock()
 sys.modules["googleapiclient.errors"].HttpError = Exception
 
 # pdfplumber
@@ -49,7 +51,7 @@ config_stub = _make_stub_module(
 sys.modules["config"] = config_stub
 
 # Now safe to import
-sys.path.insert(0, "/Users/1di/order_system_automatition/functions")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "functions"))
 from gmail_client import GmailClient, GmailMessage  # noqa: E402
 
 
@@ -96,19 +98,10 @@ class TestThreadDeduplication(unittest.TestCase):
 
     def _make_client(self) -> GmailClient:
         """Build a GmailClient with all network calls stubbed out."""
-        with patch.object(
-            sys.modules["google.oauth2.credentials"].Credentials,
-            "__init__", return_value=None
-        ), patch.object(
-            sys.modules["google.oauth2.credentials"].Credentials,
-            "refresh", return_value=None
-        ), patch(
-            "gmail_client.build", return_value=MagicMock()
-        ):
-            client = GmailClient.__new__(GmailClient)
-            client._gmail_account = "test@test.com"
-            client._service = MagicMock()
-            return client
+        client = GmailClient.__new__(GmailClient)
+        client._gmail_account = "test@test.com"
+        client._service = MagicMock()
+        return client
 
     # ------------------------------------------------------------------ #
     # 1. Single message per thread — no deduplication needed              #
@@ -117,22 +110,22 @@ class TestThreadDeduplication(unittest.TestCase):
         """One message per thread → all returned unchanged."""
         client = self._make_client()
 
-        payloads = {
-            "msg1": _make_payload("msg1", "thread-A", 1000, "Order date: 01/01\nCustomer info: Alice"),
-            "msg2": _make_payload("msg2", "thread-B", 2000, "Order date: 01/02\nCustomer info: Bob"),
+        threads = {
+            "thread-A": [_make_payload("msg1", "thread-A", 1000, "Order date: 01/01\nCustomer info: Alice")],
+            "thread-B": [_make_payload("msg2", "thread-B", 2000, "Order date: 01/02\nCustomer info: Bob")],
         }
 
-        client._service.users.return_value.messages.return_value.list.return_value.execute.return_value = {
-            "messages": [{"id": "msg1"}, {"id": "msg2"}]
+        client._service.users.return_value.threads.return_value.list.return_value.execute.return_value = {
+            "threads": [{"id": "thread-A"}, {"id": "thread-B"}]
         }
 
         def fake_get(**kwargs):
-            mid = kwargs.get("id") or kwargs.get("messageId", "")
+            thread_id = kwargs.get("id", "")
             m = MagicMock()
-            m.execute.return_value = payloads[mid]
+            m.execute.return_value = {"messages": threads[thread_id]}
             return m
 
-        client._service.users.return_value.messages.return_value.get.side_effect = fake_get
+        client._service.users.return_value.threads.return_value.get.side_effect = fake_get
         client._execute_with_retry = lambda op, fn: fn()
         client._extract_pdf_attachments = lambda payload, mid: ("", [])
 
@@ -153,24 +146,23 @@ class TestThreadDeduplication(unittest.TestCase):
         ORIGINAL_BODY = "Order date: 01/15\nCustomer info: Jean Blanks\nItem: 302Perch"
         REPLY_BODY    = "Can you confirm the color?"
 
-        payloads = {
+        messages = [
             # older message (original order) — internalDate=1000
-            "msg-original": _make_payload("msg-original", "thread-X", 1000, ORIGINAL_BODY),
+            _make_payload("msg-original", "thread-X", 1000, ORIGINAL_BODY),
             # newer message (supplier follow-up) — internalDate=9000
-            "msg-reply":    _make_payload("msg-reply",    "thread-X", 9000, REPLY_BODY),
-        }
+            _make_payload("msg-reply", "thread-X", 9000, REPLY_BODY),
+        ]
 
-        client._service.users.return_value.messages.return_value.list.return_value.execute.return_value = {
-            "messages": [{"id": "msg-original"}, {"id": "msg-reply"}]
+        client._service.users.return_value.threads.return_value.list.return_value.execute.return_value = {
+            "threads": [{"id": "thread-X"}]
         }
 
         def fake_get(**kwargs):
-            mid = kwargs.get("id") or kwargs.get("messageId", "")
             m = MagicMock()
-            m.execute.return_value = payloads[mid]
+            m.execute.return_value = {"messages": messages}
             return m
 
-        client._service.users.return_value.messages.return_value.get.side_effect = fake_get
+        client._service.users.return_value.threads.return_value.get.side_effect = fake_get
         client._execute_with_retry = lambda op, fn: fn()
         client._extract_pdf_attachments = lambda payload, mid: ("", [])
 
@@ -190,34 +182,22 @@ class TestThreadDeduplication(unittest.TestCase):
         """PDFs attached in later thread replies are included in the result."""
         client = self._make_client()
 
-        payloads = {
-            "msg-order": _make_payload("msg-order", "thread-Y", 1000, "Order date: 02/01\nCustomer info: Larry G Alberson"),
-            "msg-reply": _make_payload("msg-reply", "thread-Y", 5000, "Here is the updated PDF"),
-        }
+        messages = [
+            _make_payload("msg-order", "thread-Y", 1000, "Order date: 02/01\nCustomer info: Larry G Alberson"),
+            _make_payload("msg-reply", "thread-Y", 5000, "Here is the updated PDF"),
+        ]
 
-        client._service.users.return_value.messages.return_value.list.return_value.execute.return_value = {
-            "messages": [{"id": "msg-order"}, {"id": "msg-reply"}]
+        client._service.users.return_value.threads.return_value.list.return_value.execute.return_value = {
+            "threads": [{"id": "thread-Y"}]
         }
 
         def fake_get(**kwargs):
-            mid = kwargs.get("id") or kwargs.get("messageId", "")
             m = MagicMock()
-            m.execute.return_value = payloads[mid]
+            m.execute.return_value = {"messages": messages}
             return m
 
-        client._service.users.return_value.messages.return_value.get.side_effect = fake_get
+        client._service.users.return_value.threads.return_value.get.side_effect = fake_get
         client._execute_with_retry = lambda op, fn: fn()
-
-        # Simulate: original has no PDF, reply has a PDF
-        def fake_pdf(payload, mid):
-            if payload.get("id") == "msg-reply" or payload.get("threadId") == "thread-Y" and mid == "msg-reply":
-                return ("PDF content from reply attachment", ["order.pdf"])
-            # Check by matching the message payload threadId won't work directly,
-            # so we use the message id captured via closure in the real code.
-            return ("", [])
-
-        # Patch at a lower level: return pdf only for the reply message
-        call_count = {"n": 0}
 
         def fake_pdf_by_call(payload, mid):
             if mid == "msg-reply":
@@ -236,40 +216,36 @@ class TestThreadDeduplication(unittest.TestCase):
         self.assertIn("order.pdf", kept.pdf_filenames)
 
     # ------------------------------------------------------------------ #
-    # 4. Messages returned in REVERSE order by Gmail → oldest still wins  #
+    # 4. Gmail thread message order is used for the order body             #
     # ------------------------------------------------------------------ #
-    def test_deduplication_works_regardless_of_gmail_return_order(self):
-        """Gmail may return newest-first; internalDate must determine which is first."""
+    def test_first_thread_message_is_used_for_order_body(self):
+        """The first message returned by threads.get is treated as the order."""
         client = self._make_client()
 
         ORIGINAL_BODY = "Order date: 03/10\nCustomer info: Test Customer"
 
-        payloads = {
-            # Intentionally list the NEWER message first in the API response
-            "msg-newer": _make_payload("msg-newer", "thread-Z", 9999, "follow-up question"),
-            "msg-older": _make_payload("msg-older", "thread-Z", 1111, ORIGINAL_BODY),
-        }
+        messages = [
+            _make_payload("msg-older", "thread-Z", 1111, ORIGINAL_BODY),
+            _make_payload("msg-newer", "thread-Z", 9999, "follow-up question"),
+        ]
 
-        client._service.users.return_value.messages.return_value.list.return_value.execute.return_value = {
-            # Gmail returns newer first
-            "messages": [{"id": "msg-newer"}, {"id": "msg-older"}]
+        client._service.users.return_value.threads.return_value.list.return_value.execute.return_value = {
+            "threads": [{"id": "thread-Z"}]
         }
 
         def fake_get(**kwargs):
-            mid = kwargs.get("id") or kwargs.get("messageId", "")
             m = MagicMock()
-            m.execute.return_value = payloads[mid]
+            m.execute.return_value = {"messages": messages}
             return m
 
-        client._service.users.return_value.messages.return_value.get.side_effect = fake_get
+        client._service.users.return_value.threads.return_value.get.side_effect = fake_get
         client._execute_with_retry = lambda op, fn: fn()
         client._extract_pdf_attachments = lambda payload, mid: ("", [])
 
         result = client.list_supplier_messages("supplier@example.com", "2026-03-01", "2026-03-31")
 
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].message_id, "msg-older",
-                         "Even if Gmail returns newer first, the OLDER message must be kept")
+        self.assertEqual(result[0].message_id, "msg-older")
         self.assertIn("Test Customer", result[0].body)
 
 

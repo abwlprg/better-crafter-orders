@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import time
 from datetime import date
 from pathlib import Path
@@ -25,7 +26,7 @@ if env_file.exists():
             key, _, value = line.partition("=")
             os.environ.setdefault(key.strip(), value.strip())
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -94,6 +95,23 @@ def _is_valid_order(order: dict) -> bool:
 def _sse_event(event: str, data: dict) -> str:
     """Format a Server-Sent Event."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def require_admin_api_key(
+    x_admin_api_key: Optional[str] = Header(default=None, alias="X-Admin-API-Key"),
+) -> None:
+    """Temporary fail-closed guard for endpoints that mutate external state."""
+    expected_key = os.environ.get("ADMIN_API_KEY", "").strip()
+    if not expected_key or expected_key.lower().startswith("placeholder_"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin API key is not configured",
+        )
+    if not x_admin_api_key or not secrets.compare_digest(x_admin_api_key, expected_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin API key",
+        )
 
 
 @app.get("/api/orders-stream")
@@ -272,7 +290,7 @@ def fetch_orders(start_date: str = None, end_date: str = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/append-to-onedrive")
+@app.post("/api/append-to-onedrive", dependencies=[Depends(require_admin_api_key)])
 def append_to_onedrive(body: AppendRequest = None):
     """Append parsed orders to the existing OneDrive Word document.
 
@@ -322,7 +340,7 @@ def append_to_onedrive(body: AppendRequest = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/gmail-webhook", status_code=200)
+@app.post("/api/gmail-webhook", status_code=200, dependencies=[Depends(require_admin_api_key)])
 async def gmail_webhook(request: Request):
     """Receive Gmail push notifications from Google Pub/Sub."""
     import base64
@@ -444,7 +462,7 @@ async def gmail_webhook(request: Request):
         return {"status": "error", "detail": str(e)}
 
 
-@app.post("/api/clear-onedrive-rows")
+@app.post("/api/clear-onedrive-rows", dependencies=[Depends(require_admin_api_key)])
 def clear_onedrive_rows(
     start_date: str = Query(default=None, description="Fecha inicio MM/DD/YYYY — omitir para borrar todo"),
     end_date:   str = Query(default=None, description="Fecha fin   MM/DD/YYYY — omitir para borrar todo"),
@@ -486,7 +504,7 @@ def clear_onedrive_rows(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/daily-update")
+@app.post("/api/daily-update", dependencies=[Depends(require_admin_api_key)])
 def daily_update(days: int = Query(default=2, ge=1, le=30, description="Cuántos días hacia atrás procesar")):
     """Fetch emails from the last N days and append them to OneDrive.
 
@@ -567,7 +585,7 @@ def daily_update(days: int = Query(default=2, ge=1, le=30, description="Cuántos
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/renew-gmail-watch")
+@app.post("/api/renew-gmail-watch", dependencies=[Depends(require_admin_api_key)])
 def renew_gmail_watch():
     """Renew the Gmail push notification watch (expires every 7 days).
     Call this from Cloud Scheduler once a day.

@@ -40,6 +40,16 @@ temporales existentes. No pegues secretos, tokens, client secrets, IDs reales de
 OneDrive, ni valores de configuración sensible en chat, documentación, commits,
 capturas de pantalla o logs.
 
+## Protección temporal de endpoints de escritura
+
+Los endpoints que escriben en OneDrive, borran filas, renuevan el watch de Gmail
+o procesan webhooks requieren el header `X-Admin-API-Key`. Para pruebas locales,
+define `ADMIN_API_KEY` en `.env`. Nunca commitees claves admin reales; `.env.example`
+debe conservar solo placeholders.
+
+`/api/health` permanece público. Esta clave admin es una protección temporal de
+toma de control/estabilización, no la autenticación final de producción.
+
 ## Crear plantilla Word
 
 ```bash

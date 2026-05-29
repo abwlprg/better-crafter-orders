@@ -27,12 +27,14 @@ class TestStephenParser(unittest.TestCase):
         Customer info: jeff brand
         """
 
-        parsed = self.parser.parse(email_body)
+        rows = self.parser.parse(email_body)
 
-        self.assertIsNotNone(parsed)
-        assert parsed is not None
+        self.assertIsNotNone(rows)
+        assert rows is not None
+        self.assertEqual(len(rows), 1)
+        parsed = rows[0]
         self.assertEqual(parsed["order_date"], "04/08")
-        self.assertEqual(parsed["item_number"], "200")
+        self.assertEqual(parsed["item_code"], "200")
         self.assertEqual(parsed["item_name"], "tube feeder")
         self.assertEqual(parsed["color"], "Navy Blue + Clay")
         self.assertEqual(parsed["ship_by"], "04/15")
