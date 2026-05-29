@@ -1,7 +1,11 @@
 functions/venv/
+.venv/
 __pycache__/
 *.pyc
 .env
+.env.*
+!.env.example
+.onedrive_target_candidates.json
 *.log
 node_modules/
 frontend/node_modules/

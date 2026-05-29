@@ -29,6 +29,17 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Configuración local segura
+
+Los valores reales de Microsoft / OneDrive pertenecen solo en un `.env` local
+sin commitear o en un secret manager. `.env` nunca debe commitearse.
+`.env.example` debe contener placeholders solamente.
+
+Para pruebas locales, copia `.env.example` a `.env` y coloca allí los valores
+temporales existentes. No pegues secretos, tokens, client secrets, IDs reales de
+OneDrive, ni valores de configuración sensible en chat, documentación, commits,
+capturas de pantalla o logs.
+
 ## Crear plantilla Word
 
 ```bash

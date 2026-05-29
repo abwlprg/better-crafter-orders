@@ -164,8 +164,8 @@ INBOX_ACCOUNT  = "bettercrafter1@gmail.com"  # Inbox de Leo — no cambia
 La configuración del token de OneDrive (Microsoft Graph API) está en `functions/onedrive_client.py`. Apunta al archivo:
 ```
 Bird Feeders & Houses - Steven 2026.docx
-Drive ID: 9f9c6569035a2b06
-Item ID:  9F9C6569035A2B06!s8f3f59c58ae4411c9bb2622519f7ee43
+Drive ID: placeholder_onedrive_drive_id
+Item ID:  placeholder_onedrive_file_id
 ```
 
 ---

@@ -1,15 +1,44 @@
-#!/bin/bash
-# Correr este script desde Cloud Shell:
-#   bash scripts/deploy_cloudshell.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Deployment helper template only.
+#
+# This script intentionally refuses to run unless explicitly enabled because
+# deploys and environment updates are not part of local cleanup work.
+#
+# Real Microsoft / OneDrive values must come from an uncommitted local .env file
+# or a secret manager. Do not paste them into this script, docs, chat, commits,
+# screenshots, or logs.
+
+if [[ "${ALLOW_DEPLOY_CLOUDSHELL:-}" != "yes" ]]; then
+  echo "Refusing to deploy. Set ALLOW_DEPLOY_CLOUDSHELL=yes only during an approved deployment."
+  exit 1
+fi
+
+required_env=(
+  MS_CLIENT_ID
+  MS_REFRESH_TOKEN
+  ONEDRIVE_DRIVE_ID
+  ONEDRIVE_FILE_ID
+)
+
+for key in "${required_env[@]}"; do
+  if [[ -z "${!key:-}" ]]; then
+    echo "Missing required environment variable: ${key}" >&2
+    exit 1
+  fi
+done
+
+MS_TENANT_ID="${MS_TENANT_ID:-consumers}"
 
 gcloud run deploy order-app \
   --source . \
-  --project ordersbc-494213 \
-  --region us-central1 \
+  --project "${GCP_PROJECT_ID:?Missing required environment variable: GCP_PROJECT_ID}" \
+  --region "${GCP_REGION:-us-central1}" \
   --platform managed \
   --allow-unauthenticated \
-  --update-env-vars MS_CLIENT_ID=61c787fc-4991-49b4-a14c-bd14117ebdfd \
-  --update-env-vars MS_TENANT_ID=consumers \
-  --update-env-vars ONEDRIVE_FILE_ID='9F9C6569035A2B06!s8f3f59c58ae4411c9bb2622519f7ee43' \
-  --update-env-vars ONEDRIVE_DRIVE_ID=9f9c6569035a2b06 \
-  --update-env-vars 'MS_REFRESH_TOKEN=M.C561_SN1.0.U.-CvwAyXO7uoHc!ZRXXNO*PhRx6fAbVNJDsLSuxgEc3DvLpOLT!m7fqvXP54JqVMXerm8!MT6rCqfvfHxmeKBcFxiQJ!c7dMszsWo9w26CnwUcpPdSuqKuDpyDIJESfOXHwaBbXWB8FkFgosgfTzaxGTMYmUuJx!h!1S6hCX*Aj7mFjLn3JksNfvkLVPdD!nUTcbA4L!nqJZD9spsi8AQqf!XAKFoP285XFqT8jssBdZAERhAKUha*V28GN4kM*0FLkL*iRPp2vwlKtxXg7GxHYiLxhqeIx61K35FrNdLhAAUguAa58gTKfdf5x1!EGFTUHLAgTFnQbhdX*1!GNgTzjGe!HsnLLaRP3640ave1I6IW'
+  --update-env-vars "MS_CLIENT_ID=${MS_CLIENT_ID}" \
+  --update-env-vars "MS_TENANT_ID=${MS_TENANT_ID}" \
+  --update-env-vars "ONEDRIVE_FILE_ID=${ONEDRIVE_FILE_ID}" \
+  --update-env-vars "ONEDRIVE_DRIVE_ID=${ONEDRIVE_DRIVE_ID}" \
+  --update-env-vars "MS_REFRESH_TOKEN=${MS_REFRESH_TOKEN}"
