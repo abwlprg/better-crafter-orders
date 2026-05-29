@@ -7,7 +7,7 @@ import logging
 import os
 import secrets
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 # ── Configure logging ──────────────────
@@ -97,6 +97,97 @@ def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def normalize_parser_result(result) -> list[dict]:
+    """Normalize parser output to a list of row dicts.
+
+    Current parsers return list[dict] or None. Dict handling stays as a
+    defensive bridge for older parser implementations.
+    """
+    if result is None:
+        return []
+    if isinstance(result, dict):
+        return [result]
+    if isinstance(result, list):
+        rows: list[dict] = []
+        for row in result:
+            if isinstance(row, dict):
+                rows.append(row)
+            else:
+                logger.warning("Ignoring non-dict parser row: %s", type(row).__name__)
+        return rows
+
+    logger.warning("Ignoring unsupported parser result type: %s", type(result).__name__)
+    return []
+
+
+def _clean_order_row(row: dict) -> dict:
+    """Convert row values to stripped strings without mutating parser output."""
+    return {str(key): "" if value is None else str(value).strip() for key, value in row.items()}
+
+
+def _message_metadata(message, supplier_id: str, supplier_name: str, item_index: int) -> dict:
+    """Build source metadata for an order row when available on the Gmail message."""
+    metadata = {
+        "supplier_id": supplier_id,
+        "supplier_name": supplier_name,
+        "item_index": str(item_index),
+    }
+
+    for field, attr_names in {
+        "message_id": ("message_id",),
+        "thread_id": ("thread_id",),
+        "email_subject": ("subject", "email_subject"),
+        "email_date": ("email_date", "sent_date"),
+    }.items():
+        for attr_name in attr_names:
+            value = getattr(message, attr_name, "")
+            if value:
+                metadata[field] = str(value).strip()
+                break
+
+    if "email_date" not in metadata:
+        try:
+            internal_date_ms = int(getattr(message, "internal_date_ms", 0) or 0)
+        except (TypeError, ValueError):
+            internal_date_ms = 0
+        if internal_date_ms:
+            metadata["email_date"] = datetime.fromtimestamp(
+                internal_date_ms / 1000,
+                tz=timezone.utc,
+            ).date().isoformat()
+
+    return metadata
+
+
+def parse_message_to_order_rows(
+    parser,
+    message,
+    supplier_id: str = "stephen",
+    supplier_name: str = "Stephen",
+) -> tuple[list[dict], int, int]:
+    """Parse one Gmail message into valid order rows.
+
+    Returns (valid_rows, invalid_rows, candidate_rows). Each parser row is
+    validated independently so one bad item does not discard valid siblings.
+    """
+    raw_rows = normalize_parser_result(parser.parse(message.body, pdf_text=message.pdf_text or None))
+    valid_rows: list[dict] = []
+    invalid_rows = 0
+
+    for item_index, raw_row in enumerate(raw_rows, start=1):
+        order = _clean_order_row(raw_row)
+        for key, value in _message_metadata(message, supplier_id, supplier_name, item_index).items():
+            if value and not order.get(key):
+                order[key] = value
+
+        if _is_valid_order(order):
+            valid_rows.append(order)
+        else:
+            invalid_rows += 1
+
+    return valid_rows, invalid_rows, len(raw_rows)
+
+
 def require_admin_api_key(
     x_admin_api_key: Optional[str] = Header(default=None, alias="X-Admin-API-Key"),
 ) -> None:
@@ -159,6 +250,8 @@ def fetch_orders_stream(start_date: str = None, end_date: str = None):
         # Step 4: Parse emails one by one
         orders: list[dict] = []
         failed = 0
+        invalid_rows_total = 0
+        empty_parser_results = 0
         pdf_count = 0
 
         for i, msg in enumerate(messages):
@@ -171,25 +264,25 @@ def fetch_orders_stream(start_date: str = None, end_date: str = None):
                         idx, total, msg.message_id[:10], len(msg.body),
                         len(msg.pdf_text or ""), msg.pdf_filenames or [])
 
-            result = parser.parse(msg.body, pdf_text=msg.pdf_text or None)
-            if result and _is_valid_order(result):
-                orders.append(result)
-                customer = result.get('customer_name', '?')
-                item = result.get('item_code', '?')
+            valid_rows, invalid_rows, candidate_rows = parse_message_to_order_rows(parser, msg)
+            invalid_rows_total += invalid_rows
+            failed += invalid_rows
+            if valid_rows:
+                orders.extend(valid_rows)
+                customer = valid_rows[0].get('customer_name', '?')
+                item = valid_rows[0].get('item_code', '?')
                 logger.info(
-                    "  ✅ [%d/%d] Parsed — customer=%s, item=%s%s",
-                    idx, total, customer, item, " 📎PDF" if has_pdf else ""
+                    "  ✅ [%d/%d] Parsed %d row(s) — customer=%s, first item=%s%s",
+                    idx, total, len(valid_rows), customer, item, " 📎PDF" if has_pdf else ""
                 )
             else:
-                failed += 1
-                missing = []
-                if result:
-                    for k in ("customer_name", "item_code", "quantity", "ship_by"):
-                        if not result.get(k):
-                            missing.append(k)
-                else:
-                    missing = ["<parser returned None>"]
-                logger.info("  ❌ [%d/%d] Skipped — missing: %s", idx, total, missing)
+                if candidate_rows == 0:
+                    empty_parser_results += 1
+                    failed += 1
+                logger.info(
+                    "  ❌ [%d/%d] Skipped — parser rows=%d invalid rows=%d",
+                    idx, total, candidate_rows, invalid_rows,
+                )
 
             # Send progress every email
             pct = 25 + int((idx / total) * 65)  # 25% → 90%
@@ -200,7 +293,10 @@ def fetch_orders_stream(start_date: str = None, end_date: str = None):
                 "current": idx,
                 "total": total,
                 "parsed": len(orders),
+                "orders_parsed": len(orders),
                 "failed": failed,
+                "invalid_rows": invalid_rows_total,
+                "empty_parser_results": empty_parser_results,
                 "pdfs": pdf_count,
             })
 
@@ -215,9 +311,13 @@ def fetch_orders_stream(start_date: str = None, end_date: str = None):
         yield _sse_event("complete", {
             "message": f"✅ Done in {elapsed}s",
             "percent": 100,
+            "emails_found": total,
             "total_emails": total,
             "parsed": len(orders),
+            "orders_parsed": len(orders),
             "failed": failed,
+            "invalid_rows": invalid_rows_total,
+            "empty_parser_results": empty_parser_results,
             "pdfs_found": pdf_count,
             "elapsed": elapsed,
             "orders": orders,
@@ -251,24 +351,34 @@ def fetch_orders(start_date: str = None, end_date: str = None):
 
         orders: list[dict] = []
         failed = 0
+        invalid_rows_total = 0
+        empty_parser_results = 0
         pdf_count = 0
         for i, msg in enumerate(messages):
             has_pdf = bool(msg.pdf_text)
             if has_pdf:
                 pdf_count += 1
-            result = parser.parse(msg.body, pdf_text=msg.pdf_text or None)
-            if result and _is_valid_order(result):
-                orders.append(result)
+            valid_rows, invalid_rows, candidate_rows = parse_message_to_order_rows(parser, msg)
+            invalid_rows_total += invalid_rows
+            failed += invalid_rows
+            if valid_rows:
+                orders.extend(valid_rows)
                 logger.info(
-                    "  ✅ [%d/%d] %s — %s%s",
+                    "  ✅ [%d/%d] %d row(s) — %s — %s%s",
                     i + 1, len(messages),
-                    result.get('customer_name', '?'),
-                    result.get('item_code', '?'),
+                    len(valid_rows),
+                    valid_rows[0].get('customer_name', '?'),
+                    valid_rows[0].get('item_code', '?'),
                     " 📎" if has_pdf else "",
                 )
             else:
-                failed += 1
-                logger.info("  ❌ [%d/%d] Skipped", i + 1, len(messages))
+                if candidate_rows == 0:
+                    empty_parser_results += 1
+                    failed += 1
+                logger.info(
+                    "  ❌ [%d/%d] Skipped — parser rows=%d invalid rows=%d",
+                    i + 1, len(messages), candidate_rows, invalid_rows,
+                )
 
         _cached_orders = orders
         elapsed = round(time.time() - t0, 1)
@@ -278,9 +388,13 @@ def fetch_orders(start_date: str = None, end_date: str = None):
         logger.info("═" * 50)
 
         return {
+            "emails_found": len(messages),
             "total_emails": len(messages),
             "parsed": len(orders),
+            "orders_parsed": len(orders),
             "failed": failed,
+            "invalid_rows": invalid_rows_total,
+            "empty_parser_results": empty_parser_results,
             "pdfs_found": pdf_count,
             "elapsed": elapsed,
             "orders": orders,
@@ -421,21 +535,34 @@ async def gmail_webhook(request: Request):
             logger.info("📬 Found %d email(s) from last 7 days", len(messages))
 
         new_orders = []
+        invalid_rows_total = 0
+        empty_parser_results = 0
         for msg in messages:
             logger.info("  🔍 Parsing msg_id=%s (body=%d chars, pdf=%d chars)",
                         msg.message_id[:12], len(msg.body), len(msg.pdf_text or ""))
-            parsed = parser.parse(msg.body, pdf_text=msg.pdf_text or None)
-            if not parsed or not parsed.get("item_code", "").strip():
-                logger.warning("  ❌ msg_id=%s — no valid order parsed", msg.message_id[:12])
+            valid_rows, invalid_rows, candidate_rows = parse_message_to_order_rows(parser, msg)
+            invalid_rows_total += invalid_rows
+            if not valid_rows:
+                if candidate_rows == 0:
+                    empty_parser_results += 1
+                logger.warning(
+                    "  ❌ msg_id=%s — no valid order parsed (parser rows=%d invalid rows=%d)",
+                    msg.message_id[:12], candidate_rows, invalid_rows,
+                )
                 continue
-            order = {k: str(v).strip() for k, v in parsed.items()}
-            logger.info("  ✅ msg_id=%s → customer=%s item=%s date=%s",
-                        msg.message_id[:12], order.get("customer_name"), order.get("item_code"), order.get("order_date"))
-            new_orders.append(order)
+            for order in valid_rows:
+                logger.info("  ✅ msg_id=%s → customer=%s item=%s date=%s",
+                            msg.message_id[:12], order.get("customer_name"), order.get("item_code"), order.get("order_date"))
+            new_orders.extend(valid_rows)
 
         if not new_orders:
             logger.info("ℹ️  No parseable orders found — nothing to append to OneDrive")
-            return {"status": "ok", "orders_found": 0}
+            return {
+                "status": "ok",
+                "orders_found": 0,
+                "invalid_rows": invalid_rows_total,
+                "empty_parser_results": empty_parser_results,
+            }
 
         logger.info("📥 Downloading OneDrive document...")
         docx_bytes = download_docx()
@@ -452,7 +579,13 @@ async def gmail_webhook(request: Request):
         logger.info("═" * 50)
         logger.info("🏁 WEBHOOK DONE — appended=%d skipped=%d", appended, skipped)
         logger.info("═" * 50)
-        return {"status": "ok", "orders_appended": appended, "orders_skipped": skipped}
+        return {
+            "status": "ok",
+            "orders_appended": appended,
+            "orders_skipped": skipped,
+            "invalid_rows": invalid_rows_total,
+            "empty_parser_results": empty_parser_results,
+        }
 
     except Exception as e:
         logger.error("═" * 50)
@@ -544,17 +677,35 @@ def daily_update(days: int = Query(default=2, ge=1, le=30, description="Cuántos
         logger.info("📬 Found %d email(s) from Stephen in range %s → %s", len(messages), start_date, end_date)
 
         orders: list[dict] = []
+        invalid_rows_total = 0
+        empty_parser_results = 0
         for msg in messages:
-            parsed = parser.parse(msg.body, pdf_text=msg.pdf_text or None)
-            if parsed and _is_valid_order(parsed):
-                orders.append({k: str(v).strip() for k, v in parsed.items()})
-                logger.info("  ✅ customer=%s item=%s", parsed.get("customer_name"), parsed.get("item_code"))
+            valid_rows, invalid_rows, candidate_rows = parse_message_to_order_rows(parser, msg)
+            invalid_rows_total += invalid_rows
+            if valid_rows:
+                orders.extend(valid_rows)
+                for order in valid_rows:
+                    logger.info("  ✅ customer=%s item=%s", order.get("customer_name"), order.get("item_code"))
             else:
-                logger.info("  ❌ msg_id=%s — skipped (no valid order)", msg.message_id[:12])
+                if candidate_rows == 0:
+                    empty_parser_results += 1
+                logger.info(
+                    "  ❌ msg_id=%s — skipped (parser rows=%d invalid rows=%d)",
+                    msg.message_id[:12], candidate_rows, invalid_rows,
+                )
 
         if not orders:
             logger.info("ℹ️  No valid orders found in range — nothing to append")
-            return {"status": "ok", "range": f"{start_date} → {end_date}", "orders_appended": 0, "message": "No orders found in date range"}
+            return {
+                "status": "ok",
+                "range": f"{start_date} → {end_date}",
+                "emails_found": len(messages),
+                "orders_found": 0,
+                "orders_appended": 0,
+                "invalid_rows": invalid_rows_total,
+                "empty_parser_results": empty_parser_results,
+                "message": "No orders found in date range",
+            }
 
         file_name = get_file_name()
         logger.info("📥 Downloading '%s' from OneDrive...", file_name)
@@ -576,9 +727,12 @@ def daily_update(days: int = Query(default=2, ge=1, le=30, description="Cuántos
         return {
             "status": "ok",
             "range": f"{start_date} → {end_date}",
+            "emails_found": len(messages),
             "orders_found": len(orders),
             "orders_appended": appended,
             "orders_skipped": skipped,
+            "invalid_rows": invalid_rows_total,
+            "empty_parser_results": empty_parser_results,
         }
     except Exception as e:
         logger.error("💥 Daily update failed: %s", e, exc_info=True)
