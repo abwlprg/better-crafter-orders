@@ -89,6 +89,24 @@ npm run build
 npm run dev -- --host 127.0.0.1
 ```
 
+Safe config diagnostics:
+
+```bash
+cd /mnt/c/dev/better-crafter-orders-2.0
+.venv/bin/python scripts/check_config.py
+```
+
+The diagnostic reports only whether each expected key is present or missing. It
+must never include raw values, masked values, lengths, prefixes, suffixes, or
+hashes. Do not paste diagnostic output anywhere if it contains anything
+unexpected.
+
+Admin-protected local API diagnostic:
+
+```bash
+curl -H "X-Admin-API-Key: <local-admin-key>" http://127.0.0.1:8000/api/config-diagnostics
+```
+
 ## Estructura
 
 - `functions/main.py`: función programada principal (cada 12 horas)

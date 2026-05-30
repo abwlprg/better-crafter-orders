@@ -38,6 +38,7 @@ class AppendRequest(BaseModel):
 
 from functions.email_parser import PARSER_REGISTRY, get_parser
 from functions.gmail_client import GmailClient
+from scripts.check_config import get_config_diagnostics
 
 # ── Hardcoded business constants ──────────────────
 STEPHEN_EMAIL = "7173783020@hellofax.com"
@@ -203,6 +204,12 @@ def require_admin_api_key(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid admin API key",
         )
+
+
+@app.get("/api/config-diagnostics", dependencies=[Depends(require_admin_api_key)])
+def config_diagnostics():
+    """Report environment key presence only; never expose configured values."""
+    return get_config_diagnostics(os.environ)
 
 
 @app.get("/api/orders-stream")
