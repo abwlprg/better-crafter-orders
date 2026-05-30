@@ -53,7 +53,7 @@ pueda conectarse — esto solo funciona en la Mac, no en Cloud Shell.
 El token nuevo fue generado pero el script falló al guardarlo en Secret Manager
 (pidió contraseña del keychain del sistema varias veces).
 
-**El token obtenido fue:** `1//0hjq5bXDP1pW7CgYIARAAG...` (incompleto en logs)
+Refresh token value removed from tracked documentation. Store replacement only in Secret Manager or local `.env`.
 
 ### Opción A — Volver a correr el script completo (recomendado)
 ```bash

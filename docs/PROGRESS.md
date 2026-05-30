@@ -75,7 +75,7 @@ Por cada correo se loguea:
 ## ⚠️ Pendientes
 
 ### 🔴 URGENTE — API Key de Gemini bloqueada
-Google bloqueó la key `AIzaSyDnOxQsXrB1JaJeQ3BeEpijM6w2Fb6hHqQ` porque fue expuesta públicamente.
+Gemini API key value removed from tracked documentation. Store replacement only in a secret manager or local `.env`.
 
 **Cómo arreglar:**
 1. Ir a https://aistudio.google.com/app/apikey con `bettercrafter1@gmail.com`

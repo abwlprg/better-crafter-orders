@@ -127,6 +127,11 @@ temporales existentes. No pegues secretos, tokens, client secrets, IDs reales de
 OneDrive, ni valores de configuración sensible en chat, documentación, commits,
 capturas de pantalla o logs.
 
+`functions/config.py` no debe contener credenciales reales. Las credenciales de
+Gmail, Microsoft / OneDrive, Gemini y claves admin deben venir de variables de
+entorno locales o del secret manager del entorno donde corra la app. Los errores
+de configuración deben nombrar la variable faltante sin imprimir su valor.
+
 ## Protección temporal de endpoints de escritura
 
 Los endpoints que escriben en OneDrive, borran filas, renuevan el watch de Gmail
