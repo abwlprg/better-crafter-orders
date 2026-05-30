@@ -50,6 +50,22 @@ debe conservar solo placeholders.
 `/api/health` permanece público. Esta clave admin es una protección temporal de
 toma de control/estabilización, no la autenticación final de producción.
 
+## Comportamiento actual de la UI durante estabilización
+
+La UI de Vite permite previsualizar órdenes usando los endpoints de lectura
+implementados por el backend, principalmente `GET /api/orders-stream`. Esta
+previsualización puede leer correos mediante el backend, pero no escribe en
+OneDrive desde el navegador.
+
+La escritura en OneDrive permanece protegida durante esta fase. La UI muestra el
+estado como admin-only y deshabilitado, no expone acciones de escritura con clave
+admin, no solicita `ADMIN_API_KEY`, y no guarda claves en almacenamiento del
+navegador.
+
+Las rutas backend de escritura, borrado, webhook y renovación siguen requiriendo
+`X-Admin-API-Key`. Esta es una medida temporal de toma de control/estabilización,
+no el flujo final de autenticación de producción.
+
 ## Crear plantilla Word
 
 ```bash
