@@ -20,7 +20,10 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import Resource, build
 from googleapiclient.errors import HttpError
 
-import config
+try:
+    from . import config
+except ImportError:  # Firebase Functions imports modules from functions/ directly.
+    import config
 
 logger = logging.getLogger(__name__)
 

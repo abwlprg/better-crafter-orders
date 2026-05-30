@@ -84,7 +84,17 @@ body {
   gap: var(--space-4);
   justify-content: center;
   flex-wrap: wrap;
-  margin-bottom: var(--space-10);
+  margin-bottom: var(--space-4);
+}
+
+.stabilization-note {
+  color: var(--color-muted);
+  font-size: 14px;
+  font-weight: 450;
+  line-height: 1.5;
+  margin: 0 auto var(--space-10);
+  max-width: 680px;
+  text-align: center;
 }
 
 .btn {

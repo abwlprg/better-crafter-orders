@@ -16,13 +16,20 @@ function App() {
   const [orders, setOrders] = useState([])
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [generating, setGenerating] = useState(false)
-  const [reportFile, setReportFile] = useState(null)
   const [error, setError] = useState(null)
   
   // Progress state
   const [progress, setProgress] = useState(null)
   const eventSourceRef = useRef(null)
+
+  const safeErrorMessage = (message) => {
+    if (!message) return 'Unable to preview orders'
+    const lower = message.toLowerCase()
+    if (lower.includes('admin api key') || lower.includes('protected')) {
+      return 'Write actions are protected during stabilization and are not available from this UI.'
+    }
+    return message
+  }
 
   const fetchOrders = async () => {
     setLoading(true)
@@ -30,7 +37,6 @@ function App() {
     setProgress({ percent: 0, message: '🚀 Starting...', step: 'init' })
     setOrders([])
     setStats(null)
-    setReportFile(null)
 
     // Build query params from selected dates
     const params = new URLSearchParams()
@@ -49,7 +55,8 @@ function App() {
     // If no dates selected → last 7 days (backend default)
 
     // Use SSE for streaming progress
-    const evtSource = new EventSource(`${API_URL}/orders-stream?${params.toString()}`)
+    const query = params.toString()
+    const evtSource = new EventSource(`${API_URL}/orders-stream${query ? `?${query}` : ''}`)
     eventSourceRef.current = evtSource
 
     evtSource.addEventListener('progress', (e) => {
@@ -83,7 +90,7 @@ function App() {
       // Check if it's a custom error event or connection error
       if (e.data) {
         const data = JSON.parse(e.data)
-        setError(data.message)
+        setError(safeErrorMessage(data.message))
       } else {
         setError('Connection lost to server')
       }
@@ -99,39 +106,10 @@ function App() {
       evtSource.close()
       eventSourceRef.current = null
       if (!stats) {
-        setError('Connection to server failed')
+        setError('Connection to server failed while previewing orders')
       }
       setProgress(null)
       setLoading(false)
-    }
-  }
-
-  const generateReport = async () => {
-    setGenerating(true)
-    setError(null)
-    try {
-      // Send orders in the body to avoid cross-instance cache miss in Cloud Run
-      const res = await fetch(`${API_URL}/generate-report`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orders }),
-      })
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}))
-        throw new Error(errData.detail || `Server error ${res.status}`)
-      }
-      const data = await res.json()
-      setReportFile(data.filename)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setGenerating(false)
-    }
-  }
-
-  const downloadReport = () => {
-    if (reportFile) {
-      window.open(`${API_URL}/download-report/${reportFile}`, '_blank')
     }
   }
 
@@ -144,7 +122,7 @@ function App() {
     <div className="app">
       <header className="header">
         <h1>Order <span className="accent">Automation</span></h1>
-        <p className="subtitle">Gmail → Parse → Word Report — fully automated</p>
+        <p className="subtitle">Read-only Gmail order preview during stabilization</p>
       </header>
 
       <div className="filters">
@@ -205,20 +183,24 @@ function App() {
       <div className="actions">
         <button onClick={fetchOrders} disabled={loading} className="btn btn-primary">
           {loading
-            ? 'Fetching emails…'
+            ? 'Previewing orders...'
             : startDate && endDate
-              ? `Fetch Orders ${startDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})} – ${endDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}`
+              ? `Preview Orders ${startDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})} - ${endDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}`
               : startDate
-                ? `Fetch Orders from ${startDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}`
-                : 'Fetch Orders (last 7 days)'}
+                ? `Preview Orders from ${startDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}`
+                : 'Preview Orders (last 7 days)'}
         </button>
 
         {orders.length > 0 && (
-          <button onClick={generateReport} disabled={generating} className="btn btn-success">
-            {generating ? 'Generating…' : 'Generate Word Report'}
+          <button disabled className="btn btn-success">
+            Write to OneDrive (admin-only)
           </button>
         )}
       </div>
+
+      <p className="stabilization-note">
+        OneDrive writing is protected and disabled from this UI during stabilization.
+      </p>
 
       {error && <div className="error">{error}</div>}
 
@@ -246,20 +228,6 @@ function App() {
               <span className="progress-count">{progress.current} / {progress.total} emails</span>
             )}
           </div>
-        </div>
-      )}
-
-      {reportFile && (
-        <div className="report-card">
-          <div className="report-icon">📄</div>
-          <div className="report-info">
-            <h3>Report Generated</h3>
-            <p className="report-filename">{reportFile}</p>
-            <p className="report-meta">{orders.length} orders • Generated just now</p>
-          </div>
-          <button onClick={downloadReport} className="btn btn-download">
-            Download
-          </button>
         </div>
       )}
 
@@ -295,7 +263,7 @@ function App() {
 
       {!stats && !loading && (
         <div className="empty-state">
-          <p>Select a supplier, optionally set date filters, then click "Fetch Orders from Gmail".</p>
+          <p>Select a supplier, optionally set date filters, then preview orders from Gmail.</p>
         </div>
       )}
 

@@ -2,6 +2,93 @@
 
 Sistema de automatización con Firebase Cloud Functions (Python gen 2) para leer correos salientes de Gmail hacia un proveedor (Stephen), extraer órdenes y generar un reporte `.docx` diario.
 
+## Current Stabilization Status
+
+The active source of truth is the Better Crafter Orders 2.0 codebase in this
+repository. The older Firebase/static HTML repo is reference/quarantine only and
+must not be used as the active application during stabilization.
+
+No deploy has happened as part of this stabilization work. No production
+OneDrive writes have been intentionally performed during stabilization. Real
+secrets belong only in local `.env` files or a secret manager, never in source
+code, commits, chat, screenshots, or logs.
+
+Edit `.env` through VS Code Explorer or another normal editor. If using VS Code
+from WSL, run `code .env`. Do not print `.env`; do not use terminal editors like
+`nano`, `vim`, `vi`, or `emacs` unless you explicitly choose to.
+
+### Completed stabilization PRs
+
+PR #1 - remove hardcoded Microsoft OneDrive credentials
+- Moved Microsoft / OneDrive config out of tracked source and into env-driven configuration.
+- Added `.env.example` placeholders.
+- Guarded unsafe deploy script behavior.
+- Commit: `715638e`
+
+PR #2 - protect write endpoints with admin API key
+- Protected dangerous write/delete/external-state routes with `ADMIN_API_KEY` / `X-Admin-API-Key`.
+- Kept `/api/health` public.
+- Protected:
+  - `POST /api/append-to-onedrive`
+  - `POST /api/gmail-webhook`
+  - `POST /api/clear-onedrive-rows`
+  - `POST /api/daily-update`
+  - `POST /api/renew-gmail-watch`
+- Commit: `c64c339`
+
+PR #3 - normalize parser results in API order paths
+- Normalized parser outputs from `None`, legacy `dict`, empty list, and `list[dict]`.
+- Preserved multi-item parser results.
+- Validates rows individually.
+- Skips invalid sibling rows without discarding valid rows.
+- Commit: `80247a1`
+
+PR #4 - frontend endpoint alignment
+- Preview/fetch uses implemented read endpoint `/api/orders-stream`.
+- Removed active frontend calls to missing `/api/generate-report` and `/api/download-report/...`.
+- OneDrive write action is disabled/protected in the UI during stabilization.
+- No frontend admin-key handling.
+- Branch: `stabilize/frontend-endpoint-alignment`
+
+## Local Sanity Check
+
+Open `.env` using VS Code Explorer or:
+
+```bash
+code .env
+```
+
+Do not print `.env`. Do not paste secrets into chat. Do not call protected
+write/delete/scheduler endpoints during sanity checks. `/api/health` is the safe
+backend check. Preview/fetch may read Gmail if credentials are configured, so use
+it only when you intentionally want a local Gmail read.
+
+Backend:
+
+```bash
+cd /mnt/c/dev/better-crafter-orders-2.0
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+uvicorn api:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Safe backend health check from another terminal:
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+Frontend:
+
+```bash
+cd /mnt/c/dev/better-crafter-orders-2.0/frontend
+npm install
+npm run build
+npm run dev -- --host 127.0.0.1
+```
+
 ## Estructura
 
 - `functions/main.py`: función programada principal (cada 12 horas)
@@ -49,6 +136,22 @@ debe conservar solo placeholders.
 
 `/api/health` permanece público. Esta clave admin es una protección temporal de
 toma de control/estabilización, no la autenticación final de producción.
+
+## Comportamiento actual de la UI durante estabilización
+
+La UI de Vite permite previsualizar órdenes usando los endpoints de lectura
+implementados por el backend, principalmente `GET /api/orders-stream`. Esta
+previsualización puede leer correos mediante el backend, pero no escribe en
+OneDrive desde el navegador.
+
+La escritura en OneDrive permanece protegida durante esta fase. La UI muestra el
+estado como admin-only y deshabilitado, no expone acciones de escritura con clave
+admin, no solicita `ADMIN_API_KEY`, y no guarda claves en almacenamiento del
+navegador.
+
+Las rutas backend de escritura, borrado, webhook y renovación siguen requiriendo
+`X-Admin-API-Key`. Esta es una medida temporal de toma de control/estabilización,
+no el flujo final de autenticación de producción.
 
 ## Crear plantilla Word
 
