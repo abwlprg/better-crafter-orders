@@ -107,6 +107,48 @@ Admin-protected local API diagnostic:
 curl -H "X-Admin-API-Key: <local-admin-key>" http://127.0.0.1:8000/api/config-diagnostics
 ```
 
+## Dry-run batch order preview
+
+`POST /api/batch-orders` provides an admin-protected dry-run preview for
+supplier order candidates. It reads matching Gmail messages and parses candidate
+orders, but it does not write to OneDrive, delete OneDrive rows, write to
+Firestore, mark emails as processed, or mutate external state. This endpoint is
+dry-run only during stabilization; requests with `dry_run: false` are rejected.
+
+The endpoint requires `X-Admin-API-Key`. Do not put admin keys in the request
+body, frontend code, browser storage, logs, or documentation.
+
+Supported supplier IDs in this branch are `stephen` and `steven`; both map to
+the current Stephen supplier parser/email path. Use narrow date ranges for local
+checks because this endpoint can perform a read-only Gmail fetch.
+
+Example local request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/batch-orders \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-API-Key: <local-admin-key>" \
+  -d '{"supplier_ids":["stephen"],"start_date":"2026-05-01","end_date":"2026-05-02","dry_run":true,"include_orders":false}'
+```
+
+Request body:
+
+```json
+{
+  "supplier_ids": ["stephen"],
+  "start_date": "2026-05-01",
+  "end_date": "2026-05-02",
+  "dry_run": true,
+  "include_orders": false,
+  "max_preview_rows": 100
+}
+```
+
+`dry_run` defaults to `true`. `supplier_ids`, `start_date`, and `end_date` are
+required. Dates must use `YYYY-MM-DD`. If `include_orders` is true, preview rows
+are sanitized and capped at 100 rows. Email bodies, raw PDF text, headers,
+tokens, credentials, and admin keys are never included in the response.
+
 ## Estructura
 
 - `functions/main.py`: función programada principal (cada 12 horas)
