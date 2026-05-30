@@ -14,7 +14,10 @@ from docx import Document
 from docxtpl import DocxTemplate
 from firebase_admin import storage
 
-import config
+try:
+    from . import config
+except ImportError:  # Firebase Functions imports modules from functions/ directly.
+    import config
 
 logger = logging.getLogger(__name__)
 
