@@ -30,9 +30,10 @@ class TestAdminApiKeyGuard(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
 
-    def test_route_dependencies_are_applied_to_write_endpoints_only(self) -> None:
+    def test_route_dependencies_are_applied_to_protected_endpoints(self) -> None:
         routes = {getattr(route, "path", ""): route for route in api.app.routes}
         protected_paths = {
+            "/api/batch-orders",
             "/api/append-to-onedrive",
             "/api/gmail-webhook",
             "/api/clear-onedrive-rows",

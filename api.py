@@ -29,12 +29,46 @@ if env_file.exists():
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import List, Optional
 
 
 class AppendRequest(BaseModel):
     orders: Optional[List[dict]] = None  # frontend puede enviar orders directamente
+
+
+class BatchOrdersRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    supplier_ids: List[str] = Field(..., min_length=1)
+    start_date: str
+    end_date: str
+    dry_run: bool = True
+    include_orders: bool = False
+    max_preview_rows: int = Field(default=100, ge=0)
+
+    @field_validator("supplier_ids")
+    @classmethod
+    def supplier_ids_must_be_non_empty(cls, value: List[str]) -> List[str]:
+        supplier_ids = [
+            supplier_id.strip().lower()
+            for supplier_id in value
+            if supplier_id.strip()
+        ]
+        if not supplier_ids:
+            raise ValueError("supplier_ids must include at least one supplier")
+        return supplier_ids
+
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def dates_must_be_iso_yyyy_mm_dd(cls, value: str) -> str:
+        try:
+            parsed = date.fromisoformat(value)
+        except (TypeError, ValueError):
+            raise ValueError("date must use YYYY-MM-DD format")
+        if parsed.isoformat() != value:
+            raise ValueError("date must use YYYY-MM-DD format")
+        return value
 
 from functions.email_parser import PARSER_REGISTRY, get_parser
 from functions.gmail_client import GmailClient
@@ -43,6 +77,38 @@ from scripts.check_config import get_config_diagnostics
 # ── Hardcoded business constants ──────────────────
 STEPHEN_EMAIL = "7173783020@hellofax.com"
 INBOX_ACCOUNT = "bettercrafter1@gmail.com"
+MAX_BATCH_PREVIEW_ROWS = 100
+SUPPORTED_BATCH_SUPPLIERS = {
+    "stephen": {
+        "supplier_id": "stephen",
+        "supplier_name": "Stephen",
+        "supplier_email": STEPHEN_EMAIL,
+        "parser_key": "stephen",
+    },
+    "steven": {
+        "supplier_id": "steven",
+        "supplier_name": "Stephen",
+        "supplier_email": STEPHEN_EMAIL,
+        "parser_key": "stephen",
+    },
+}
+PREVIEW_ORDER_FIELDS = (
+    "order_date",
+    "item_code",
+    "item_name",
+    "color",
+    "ship_by",
+    "customer_name",
+    "quantity",
+    "brand",
+    "supplier_id",
+    "supplier_name",
+    "item_index",
+    "message_id",
+    "thread_id",
+    "email_subject",
+    "email_date",
+)
 
 # Gmail OAuth credentials (for webhook processing)
 GMAIL_CLIENT_ID     = os.environ.get("GMAIL_CLIENT_ID", "")
@@ -189,6 +255,11 @@ def parse_message_to_order_rows(
     return valid_rows, invalid_rows, len(raw_rows)
 
 
+def _sanitize_preview_order(row: dict) -> dict:
+    """Return only business-safe preview fields from a parsed order row."""
+    return {field: row[field] for field in PREVIEW_ORDER_FIELDS if field in row}
+
+
 def require_admin_api_key(
     x_admin_api_key: Optional[str] = Header(default=None, alias="X-Admin-API-Key"),
 ) -> None:
@@ -210,6 +281,123 @@ def require_admin_api_key(
 def config_diagnostics():
     """Report environment key presence only; never expose configured values."""
     return get_config_diagnostics(os.environ)
+
+
+@app.post("/api/batch-orders", dependencies=[Depends(require_admin_api_key)])
+def batch_orders(body: BatchOrdersRequest):
+    """Admin-protected read-only batch preview for supplier order candidates."""
+    if not body.dry_run:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="dry_run=false is not supported for /api/batch-orders",
+        )
+
+    unsupported = [
+        supplier_id
+        for supplier_id in body.supplier_ids
+        if supplier_id not in SUPPORTED_BATCH_SUPPLIERS
+    ]
+    if unsupported:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "Unsupported supplier_id requested",
+                "unsupported_supplier_ids": unsupported,
+                "supported_supplier_ids": sorted(SUPPORTED_BATCH_SUPPLIERS),
+            },
+        )
+
+    preview_limit = min(body.max_preview_rows, MAX_BATCH_PREVIEW_ROWS)
+    gmail = _get_gmail_client()
+    suppliers = []
+
+    logger.info(
+        "Batch dry-run preview requested suppliers=%s range=%s to %s include_orders=%s cap=%d",
+        body.supplier_ids,
+        body.start_date,
+        body.end_date,
+        body.include_orders,
+        preview_limit,
+    )
+
+    for supplier_id in body.supplier_ids:
+        supplier = SUPPORTED_BATCH_SUPPLIERS[supplier_id]
+        supplier_errors: list[str] = []
+        orders: list[dict] = []
+        invalid_rows_total = 0
+        orders_parsed = 0
+        emails_found = 0
+
+        try:
+            messages = gmail.list_supplier_messages(
+                supplier_email=supplier["supplier_email"],
+                start_date=body.start_date,
+                end_date=body.end_date,
+            )
+            emails_found = len(messages)
+            parser = get_parser(supplier["parser_key"])
+
+            for message in messages:
+                valid_rows, invalid_rows, candidate_rows = parse_message_to_order_rows(
+                    parser,
+                    message,
+                    supplier_id=supplier["supplier_id"],
+                    supplier_name=supplier["supplier_name"],
+                )
+                invalid_rows_total += invalid_rows
+                orders_parsed += len(valid_rows)
+                if candidate_rows == 0:
+                    supplier_errors.append(
+                        f"No parser rows for message {getattr(message, 'message_id', '')}"
+                    )
+                if body.include_orders and len(orders) < preview_limit:
+                    remaining = preview_limit - len(orders)
+                    orders.extend(
+                        _sanitize_preview_order(row) for row in valid_rows[:remaining]
+                    )
+        except Exception as exc:
+            logger.error(
+                "Batch dry-run supplier=%s failed: %s",
+                supplier_id,
+                exc,
+                exc_info=True,
+            )
+            supplier_errors.append(str(exc))
+
+        would_append = orders_parsed
+        summary = {
+            "supplier_id": supplier["supplier_id"],
+            "supplier_name": supplier["supplier_name"],
+            "emails_found": emails_found,
+            "orders_parsed": orders_parsed,
+            "invalid_rows": invalid_rows_total,
+            "duplicates": None,
+            "would_append": would_append,
+            "appended": 0,
+            "errors": supplier_errors,
+            "orders": orders if body.include_orders else [],
+        }
+        suppliers.append(summary)
+
+        logger.info(
+            "Batch dry-run supplier=%s emails=%d parsed=%d invalid=%d would_append=%d errors=%d",
+            supplier_id,
+            emails_found,
+            orders_parsed,
+            invalid_rows_total,
+            would_append,
+            len(supplier_errors),
+        )
+
+    return {
+        "status": "ok",
+        "dry_run": True,
+        "range": {
+            "start_date": body.start_date,
+            "end_date": body.end_date,
+        },
+        "suppliers": suppliers,
+    }
 
 
 @app.get("/api/orders-stream")
