@@ -186,6 +186,55 @@ write/delete endpoints, does not mark emails as processed, and does not write to
 Firestore. Avoid broad date ranges because the dry-run can still perform a
 read-only Gmail fetch when local credentials are configured.
 
+## OneDrive Sandbox Testing
+
+The local OneDrive sandbox harness is the first allowed path for OneDrive
+testing during stabilization. It must use a cloned/test Word document only. Do
+not use the production `ONEDRIVE_FILE_ID` or `ONEDRIVE_DRIVE_ID` as sandbox test
+IDs.
+
+Required test-only variables:
+
+- `ONEDRIVE_TEST_DRIVE_ID`
+- `ONEDRIVE_TEST_FILE_ID`
+- `ONEDRIVE_SANDBOX_WRITE_ENABLED`
+
+The harness also needs the existing Microsoft auth variables used by the
+OneDrive client, such as `MS_CLIENT_ID`, `MS_TENANT_ID`, and
+`MS_REFRESH_TOKEN`. Keep real values only in local `.env` or a secret manager.
+Do not paste `.env`, token values, client secrets, drive IDs, or file IDs into
+chat, screenshots, commits, or logs.
+
+Config readiness check, no Microsoft Graph call:
+
+```bash
+.venv/bin/python scripts/test_onedrive_sandbox.py --check-config
+```
+
+Read-only sandbox metadata check, Microsoft Graph metadata read only:
+
+```bash
+.venv/bin/python scripts/test_onedrive_sandbox.py --check-metadata
+```
+
+Sandbox write test, cloned/test file only:
+
+```bash
+ONEDRIVE_SANDBOX_WRITE_ENABLED=true .venv/bin/python scripts/test_onedrive_sandbox.py --write-test-row
+```
+
+The write test refuses to run unless the explicit write flag is true, the test
+IDs are present, the test IDs differ from production IDs, and the file name
+contains `TEST`, `SANDBOX`, `COPY`, or `CLONE`. The current app format is a
+`.docx` Word document, so the write test appends one row to the first table of
+the cloned/test document. The row is marked:
+
+`SANDBOX TEST - SAFE TO DELETE`
+
+The sandbox harness does not read Gmail, does not call app production endpoints,
+does not delete OneDrive content, and must not be used against production
+OneDrive files.
+
 ## Estructura
 
 - `functions/main.py`: función programada principal (cada 12 horas)
