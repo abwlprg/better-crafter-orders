@@ -55,6 +55,8 @@ class TestTrackedSourceCredentialHygiene(unittest.TestCase):
             "MS_REFRESH_TOKEN",
             "ONEDRIVE_DRIVE_ID",
             "ONEDRIVE_FILE_ID",
+            "ONEDRIVE_TEST_DRIVE_ID",
+            "ONEDRIVE_TEST_FILE_ID",
             "GEMINI_API_KEY",
             "ADMIN_API_KEY",
         }
