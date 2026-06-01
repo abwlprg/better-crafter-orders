@@ -149,6 +149,43 @@ required. Dates must use `YYYY-MM-DD`. If `include_orders` is true, preview rows
 are sanitized and capped at 100 rows. Email bodies, raw PDF text, headers,
 tokens, credentials, and admin keys are never included in the response.
 
+### Local frontend dry-run preview
+
+The Vite frontend includes a local-only Batch Dry-Run Preview flow for
+`POST /api/batch-orders`. It is intended for narrow, deliberate local checks
+after the backend is running on `127.0.0.1:8000`.
+
+Local usage:
+
+```bash
+cd /mnt/c/dev/better-crafter-orders-2.0
+source .venv/bin/activate
+uvicorn api:app --host 127.0.0.1 --port 8000 --reload
+```
+
+In another terminal:
+
+```bash
+cd /mnt/c/dev/better-crafter-orders-2.0/frontend
+npm ci
+npm run dev -- --host 127.0.0.1
+```
+
+Open the local Vite URL, choose `Stephen` or `Steven`, select a narrow start and
+end date, and enter the local admin key manually in the field labeled
+`Local admin key for dry-run preview`. Do not print `.env` to retrieve the key;
+open it in a normal editor such as VS Code if you need to read it.
+
+The key is kept only in React component state for the current page session. It
+is not saved to `localStorage`, `sessionStorage`, source code, query params, or
+logs. The frontend uses it only as the `X-Admin-API-Key` request header.
+
+The frontend always sends `dry_run: true`. It can optionally request sanitized
+preview rows with a local cap from 1 to 100. This UI flow does not call OneDrive
+write/delete endpoints, does not mark emails as processed, and does not write to
+Firestore. Avoid broad date ranges because the dry-run can still perform a
+read-only Gmail fetch when local credentials are configured.
+
 ## Estructura
 
 - `functions/main.py`: función programada principal (cada 12 horas)
@@ -204,15 +241,18 @@ toma de control/estabilización, no la autenticación final de producción.
 
 ## Comportamiento actual de la UI durante estabilización
 
-La UI de Vite permite previsualizar órdenes usando los endpoints de lectura
-implementados por el backend, principalmente `GET /api/orders-stream`. Esta
-previsualización puede leer correos mediante el backend, pero no escribe en
-OneDrive desde el navegador.
+La UI de Vite permite previsualizar órdenes usando dos flujos de lectura:
+`GET /api/orders-stream` para la previsualización streaming existente y
+`POST /api/batch-orders` para la previsualización batch dry-run protegida por
+admin. Estas previsualizaciones pueden leer correos mediante el backend local si
+las credenciales están configuradas, pero no escriben en OneDrive desde el
+navegador.
 
 La escritura en OneDrive permanece protegida durante esta fase. La UI muestra el
-estado como admin-only y deshabilitado, no expone acciones de escritura con clave
-admin, no solicita `ADMIN_API_KEY`, y no guarda claves en almacenamiento del
-navegador.
+estado de escritura como deshabilitado y no expone acciones de escritura con
+clave admin. El único campo de clave admin del frontend es temporal y sirve para
+la previsualización batch dry-run local; la clave se mantiene en memoria del
+componente y no se guarda en almacenamiento del navegador.
 
 Las rutas backend de escritura, borrado, webhook y renovación siguen requiriendo
 `X-Admin-API-Key`. Esta es una medida temporal de toma de control/estabilización,
