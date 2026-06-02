@@ -102,10 +102,9 @@ export default function Dashboard({ adminKey, navigate }) {
       )}
 
       <div className="section">
-        <div className="section-title">Production write guard</div>
+        <div className="section-title">Production status</div>
         <div className="error-msg" style={{ color: 'var(--warning)', borderColor: 'rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)' }}>
-          Production OneDrive writes are disabled until safeguards #11–#15 are complete and validated.
-          Dry-run mode only.
+          Production OneDrive updates are currently disabled. Testing is running in dry-run/sandbox mode only, so real supplier documents will not be changed.
         </div>
       </div>
     </div>

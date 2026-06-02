@@ -167,6 +167,8 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 .custom-field-remove { color: var(--danger) !important; border-color: rgba(229,83,83,0.3) !important; padding: 6px 9px !important; }
 .custom-field-remove:hover { background: rgba(229,83,83,0.1) !important; }
 .custom-fields-empty { font-size: 12px; color: var(--muted); padding: 8px 0; }
+.cf-section-help { font-size: 12px; color: var(--muted); margin-bottom: 10px; line-height: 1.5; }
+.cf-col-sub { display: block; font-size: 10px; color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; margin-top: 1px; }
 
 /* ── Sandbox success message ─────────────────────────────────────── */
 .sandbox-ok-msg { background: rgba(62,207,142,0.1); border: 1px solid rgba(62,207,142,0.3); color: var(--success); padding: 8px 12px; border-radius: var(--radius); font-size: 12px; margin-top: 4px; }

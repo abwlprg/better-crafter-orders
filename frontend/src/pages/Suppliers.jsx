@@ -253,11 +253,27 @@ function SupplierModal({ supplier, onClose, onSaved, adminKey }) {
             </button>
           </div>
 
+          <p className="cf-section-help">
+            Each custom field becomes an extra column in this supplier&apos;s Word document and tells the parser where to find that value.
+          </p>
+
           <div className="custom-field-header-row">
-            <span>Field Name</span>
-            <span>Type</span>
-            <span>Source</span>
-            <span>Hint</span>
+            <span>
+              Field Name
+              <span className="cf-col-sub">Column name</span>
+            </span>
+            <span>
+              Type
+              <span className="cf-col-sub">Value type</span>
+            </span>
+            <span>
+              Source
+              <span className="cf-col-sub">Where to look</span>
+            </span>
+            <span>
+              Hint
+              <span className="cf-col-sub">Label or clue</span>
+            </span>
             <span />
           </div>
 
