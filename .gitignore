@@ -13,3 +13,23 @@ test_output/
 *.docx
 client_secret_*.json
 .onedrive_token
+
+# Local environment / secrets - never commit
+.env
+.env.*
+!.env.template
+!.env.sample
+
+# User explicitly does not want this committed
+.env.example
+
+# Local OneDrive auth artifacts - never commit
+.onedrive_token
+.onedrive_target_candidates.json
+
+# Local credential files - never commit
+*.service-account.json
+*serviceAccount*.json
+*firebase-adminsdk*.json
+credentials*.json
+token*.json
