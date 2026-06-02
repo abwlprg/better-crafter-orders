@@ -15,29 +15,55 @@ class ConfigKey(NamedTuple):
     required: bool
 
 
+# Current 2.0 diagnostics are presence/status only. Values are never returned.
+# Production-later and legacy-reference keys are intentionally optional.
 CONFIG_KEYS: tuple[ConfigKey, ...] = (
-    ConfigKey("GMAIL_ACCOUNT", "gmail", True),
-    ConfigKey("GMAIL_CLIENT_ID", "gmail", True),
-    ConfigKey("GMAIL_CLIENT_SECRET", "gmail", True),
-    ConfigKey("GMAIL_REFRESH_TOKEN", "gmail", True),
-    ConfigKey("ADMIN_API_KEY", "admin", True),
-    ConfigKey("MS_CLIENT_ID", "onedrive", True),
-    ConfigKey("MS_TENANT_ID", "onedrive", True),
-    ConfigKey("MS_REFRESH_TOKEN", "onedrive", True),
-    ConfigKey("ONEDRIVE_DRIVE_ID", "onedrive", True),
-    ConfigKey("ONEDRIVE_FILE_ID", "onedrive", True),
-    ConfigKey("MS_CLIENT_SECRET", "optional", False),
-    ConfigKey("GEMINI_API_KEY", "optional", False),
-    ConfigKey("CLAUDE_API_KEY", "optional", False),
-    ConfigKey("GCP_PROJECT", "optional", False),
-    ConfigKey("ALLOWED_ORIGINS", "optional", False),
+    ConfigKey("GCP_PROJECT", "local_admin_app", True),
+    ConfigKey("ALLOWED_ORIGINS", "local_admin_app", True),
+    ConfigKey("ADMIN_API_KEY", "local_admin_app", True),
+    ConfigKey("GMAIL_ACCOUNT", "gmail_fetch", True),
+    ConfigKey("GMAIL_CLIENT_ID", "gmail_fetch", True),
+    ConfigKey("GMAIL_CLIENT_SECRET", "gmail_fetch", True),
+    ConfigKey("GMAIL_REFRESH_TOKEN", "gmail_fetch", True),
+    ConfigKey("MS_CLIENT_ID", "onedrive_sandbox", True),
+    ConfigKey("MS_TENANT_ID", "onedrive_sandbox", True),
+    ConfigKey("MS_REFRESH_TOKEN", "onedrive_sandbox", True),
+    ConfigKey("ONEDRIVE_TEST_DRIVE_ID", "onedrive_sandbox", True),
+    ConfigKey("ONEDRIVE_TEST_FILE_ID", "onedrive_sandbox", True),
+    ConfigKey("ONEDRIVE_SANDBOX_WRITE_ENABLED", "onedrive_sandbox", True),
+    ConfigKey("GEMINI_API_KEY", "optional_gemini", False),
+    ConfigKey("MS_CLIENT_SECRET", "production_later", False),
+    ConfigKey("ONEDRIVE_DRIVE_ID", "production_later", False),
+    ConfigKey("ONEDRIVE_FILE_ID", "production_later", False),
     ConfigKey("GOOGLE_CREDENTIALS_JSON", "optional", False),
-    ConfigKey("STORAGE_BUCKET", "optional", False),
-    ConfigKey("FIRESTORE_COLLECTION", "optional", False),
-    ConfigKey("SEARCH_HOURS_BACK", "optional", False),
-    ConfigKey("REPORT_PREFIX", "optional", False),
-    ConfigKey("TEMPLATE_PATH", "optional", False),
+    ConfigKey("CLAUDE_API_KEY", "optional", False),
+    ConfigKey("STORAGE_BUCKET", "legacy_reference", False),
+    ConfigKey("FIRESTORE_COLLECTION", "legacy_reference", False),
+    ConfigKey("SEARCH_HOURS_BACK", "legacy_reference", False),
+    ConfigKey("REPORT_PREFIX", "legacy_reference", False),
+    ConfigKey("TEMPLATE_PATH", "legacy_reference", False),
 )
+
+
+def _value_status(value: str | None) -> str:
+    """Classify config presence without returning the raw value."""
+    if not value or not value.strip():
+        return "missing"
+
+    normalized = value.strip().lower()
+    placeholder_tokens = (
+        "placeholder",
+        "placeholder_",
+        "change_me",
+        "changeme",
+        "todo",
+        "replace_me",
+        "set_me",
+    )
+    if any(normalized == token or normalized.startswith(token) for token in placeholder_tokens):
+        return "placeholder"
+
+    return "present"
 
 
 def load_env_file(path: str | Path = ".env") -> dict[str, str]:
@@ -70,9 +96,11 @@ def get_config_diagnostics(env: Mapping[str, str]) -> dict:
     missing_required: list[str] = []
 
     for item in CONFIG_KEYS:
-        present = bool(env.get(item.name, "").strip())
+        state = _value_status(env.get(item.name))
+        present = state == "present"
         keys[item.name] = {
             "present": present,
+            "status": state,
             "required": item.required,
             "category": item.category,
         }

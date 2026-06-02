@@ -14,12 +14,29 @@ const PAGES = [
   { id: 'settings',     label: 'Settings' },
 ]
 
+const LS_KEY = 'bettercrafter_admin_key'
+
 function App() {
   const [activePage, setActivePage] = useState('dashboard')
-  const [adminKey, setAdminKey] = useState('')
+  const [adminKey, setAdminKey] = useState(() => localStorage.getItem(LS_KEY) || '')
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
   const navigate = useCallback((pageId) => setActivePage(pageId), [])
+
+  const handleKeyChange = (e) => {
+    const val = e.target.value
+    setAdminKey(val)
+    if (val) {
+      localStorage.setItem(LS_KEY, val)
+    } else {
+      localStorage.removeItem(LS_KEY)
+    }
+  }
+
+  const clearKey = () => {
+    setAdminKey('')
+    localStorage.removeItem(LS_KEY)
+  }
 
   return (
     <div className={`shell ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
@@ -57,12 +74,21 @@ function App() {
               id="sidebar-admin-key"
               type="password"
               value={adminKey}
-              onChange={(e) => setAdminKey(e.target.value)}
+              onChange={handleKeyChange}
               placeholder="Enter admin key"
               autoComplete="off"
               spellCheck="false"
             />
-            <p className="field-note">In-memory only. Not stored.</p>
+            <div className="admin-key-actions">
+              <p className="field-note">
+                {adminKey ? 'Saved to browser storage.' : 'Not saved.'}
+              </p>
+              {adminKey && (
+                <button className="btn-clear-key" onClick={clearKey} type="button">
+                  Clear Admin Key
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </aside>

@@ -11,6 +11,8 @@ _LOCK = threading.Lock()
 
 VALID_STATUSES = {"active", "inactive"}
 VALID_PARSER_TYPES = {"stephen_regex", "smart"}
+VALID_FIELD_TYPES = {"text", "number", "date", "boolean"}
+VALID_FIELD_SOURCES = {"body", "subject", "pdf", "header", "manual"}
 
 
 def _load() -> list[dict]:
@@ -26,7 +28,17 @@ def _save(suppliers: list[dict]) -> None:
     )
 
 
+def _normalize_custom_field(cf: dict) -> dict:
+    return {
+        "field_name": str(cf.get("field_name", "")).strip(),
+        "type": cf.get("type", "text"),
+        "source": cf.get("source", "body"),
+        "hint": str(cf.get("hint", "")).strip(),
+    }
+
+
 def _normalize(data: dict) -> dict:
+    raw_fields = data.get("custom_fields", [])
     return {
         "id": str(data.get("id", "")).strip().lower(),
         "name": str(data.get("name", "")).strip(),
@@ -36,7 +48,9 @@ def _normalize(data: dict) -> dict:
         "onedrive_file_id": str(data.get("onedrive_file_id", "")).strip(),
         "onedrive_drive_id": str(data.get("onedrive_drive_id", "")).strip(),
         "parser_type": data.get("parser_type", "stephen_regex"),
-        "custom_fields": list(data.get("custom_fields", [])),
+        "custom_fields": [
+            _normalize_custom_field(cf) for cf in raw_fields if isinstance(cf, dict)
+        ],
         "word_schema": data.get("word_schema"),
     }
 
@@ -50,6 +64,17 @@ def _validate(supplier: dict) -> None:
         raise ValueError(f"status must be one of: {sorted(VALID_STATUSES)}")
     if supplier.get("parser_type") not in VALID_PARSER_TYPES:
         raise ValueError(f"parser_type must be one of: {sorted(VALID_PARSER_TYPES)}")
+    for i, cf in enumerate(supplier.get("custom_fields", [])):
+        if not isinstance(cf, dict):
+            raise ValueError(f"custom_fields[{i}] must be an object")
+        if cf.get("type", "text") not in VALID_FIELD_TYPES:
+            raise ValueError(
+                f"custom_fields[{i}].type must be one of: {sorted(VALID_FIELD_TYPES)}"
+            )
+        if cf.get("source", "body") not in VALID_FIELD_SOURCES:
+            raise ValueError(
+                f"custom_fields[{i}].source must be one of: {sorted(VALID_FIELD_SOURCES)}"
+            )
 
 
 def get_all() -> list[dict]:

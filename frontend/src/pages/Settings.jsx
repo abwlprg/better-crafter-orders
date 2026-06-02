@@ -1,13 +1,6 @@
 import { useEffect, useState } from 'react'
 import { API_URL } from '../config'
 
-const GROUP_LABELS = {
-  admin: 'Admin',
-  gmail: 'Gmail',
-  onedrive: 'OneDrive',
-  gemini: 'Gemini',
-}
-
 function StatusBadge({ value }) {
   if (value === true)  return <span className="badge badge-green">present</span>
   if (value === false) return <span className="badge badge-red">missing</span>
@@ -40,6 +33,17 @@ export default function Settings() {
 
       {status && (
         <div className="config-grid">
+          {/* Local app */}
+          <div className="config-group">
+            <div className="config-group-title">Local app</div>
+            {Object.entries(status.local || {}).map(([k, v]) => (
+              <div className="config-row" key={k}>
+                <span className="config-key">{k.replace(/_/g, ' ')}</span>
+                <StatusBadge value={v} />
+              </div>
+            ))}
+          </div>
+
           {/* Admin key */}
           <div className="config-group">
             <div className="config-group-title">Admin</div>
@@ -64,6 +68,28 @@ export default function Settings() {
           <div className="config-group">
             <div className="config-group-title">OneDrive</div>
             {Object.entries(status.onedrive || {}).map(([k, v]) => (
+              <div className="config-row" key={k}>
+                <span className="config-key" style={{ fontSize: 11 }}>{k.replace(/_/g, ' ')}</span>
+                <StatusBadge value={v} />
+              </div>
+            ))}
+          </div>
+
+          {/* Production-later */}
+          <div className="config-group">
+            <div className="config-group-title">Production later</div>
+            {Object.entries(status.production_later || {}).map(([k, v]) => (
+              <div className="config-row" key={k}>
+                <span className="config-key" style={{ fontSize: 11 }}>{k.replace(/_/g, ' ')}</span>
+                <StatusBadge value={v} />
+              </div>
+            ))}
+          </div>
+
+          {/* Legacy/reference */}
+          <div className="config-group">
+            <div className="config-group-title">Legacy reference</div>
+            {Object.entries(status.legacy_reference || {}).map(([k, v]) => (
               <div className="config-row" key={k}>
                 <span className="config-key" style={{ fontSize: 11 }}>{k.replace(/_/g, ' ')}</span>
                 <StatusBadge value={v} />

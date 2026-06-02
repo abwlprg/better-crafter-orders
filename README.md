@@ -1,6 +1,8 @@
-# Order System Automation (Firebase + Gmail + DOCX)
+# Better Crafter Orders 2.0
 
-Sistema de automatización con Firebase Cloud Functions (Python gen 2) para leer correos salientes de Gmail hacia un proveedor (Stephen), extraer órdenes y generar un reporte `.docx` diario.
+FastAPI/React order automation app for Better Crafter, with Gmail parsing and
+OneDrive sandbox document workflows. The older Firebase/Stephen report code is
+kept as legacy/reference material while 2.0 stabilizes.
 
 ## Current Stabilization Status
 
@@ -106,6 +108,28 @@ Admin-protected local API diagnostic:
 ```bash
 curl -H "X-Admin-API-Key: <local-admin-key>" http://127.0.0.1:8000/api/config-diagnostics
 ```
+
+## 2.0 Environment Variables
+
+`/api/config-status` and `/api/config-diagnostics` report presence/status only.
+They never return raw values, masked values, lengths, prefixes, suffixes, or
+hashes. Placeholder-looking values such as `placeholder_*` are reported as
+missing or `status: "placeholder"`; they are not treated as configured.
+
+| Group | Variables | Required for local 2.0? | Notes |
+| --- | --- | --- | --- |
+| Required for local admin app | `GCP_PROJECT`, `ALLOWED_ORIGINS`, `ADMIN_API_KEY` | Yes | `ADMIN_API_KEY` gates protected admin routes. Keep it local/testing only unless a production auth layer replaces it. |
+| Required for Gmail fetch | `GMAIL_ACCOUNT`, `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` | Yes, when fetching Gmail | Used by `/api/orders-stream`, `/api/batch-orders`, Gmail webhook handling, and Gmail watch renewal. |
+| Required for OneDrive sandbox | `MS_CLIENT_ID`, `MS_TENANT_ID`, `MS_REFRESH_TOKEN`, `ONEDRIVE_TEST_DRIVE_ID`, `ONEDRIVE_TEST_FILE_ID`, `ONEDRIVE_SANDBOX_WRITE_ENABLED` | Yes, when creating/testing sandbox docs | Sandbox flows use `ONEDRIVE_TEST_*` IDs and refuse to run if they match production IDs. |
+| Optional Gemini | `GEMINI_API_KEY` | No | Presently reported as paused until billing/quota is confirmed. |
+| Production-later | `ONEDRIVE_DRIVE_ID`, `ONEDRIVE_FILE_ID`, `MS_CLIENT_SECRET`, `GOOGLE_CREDENTIALS_JSON` | No | Do not require these for local admin, Gmail fetch, supplier CRUD, or sandbox document creation. |
+| Legacy/reference only | `STORAGE_BUCKET`, `FIRESTORE_COLLECTION`, `SEARCH_HOURS_BACK`, `REPORT_PREFIX`, `TEMPLATE_PATH` | No | Used by the old Firebase/Stephen report path (`functions/main.py`, `WordReportGenerator`, and legacy scripts). They are not required by `api.py`, the React app, supplier CRUD, or sandbox supplier doc creation. |
+
+The current supplier document creation path builds a Word table dynamically from
+the supplier config: the standard base columns plus each
+`supplier.custom_fields[].field_name`. It does not read
+`templates/stephen_template.docx`, `functions/templates/stephen_template.docx`,
+`TEMPLATE_PATH`, or `WordReportGenerator`.
 
 ## Dry-run batch order preview
 
@@ -237,14 +261,16 @@ OneDrive files.
 
 ## Estructura
 
-- `functions/main.py`: función programada principal (cada 12 horas)
+- `api.py`: FastAPI backend for the active 2.0 app
+- `frontend/`: React admin app for local 2.0 workflows
+- `functions/main.py`: legacy Firebase scheduled function/reference path
 - `functions/gmail_client.py`: cliente Gmail API con OAuth2 + retries
 - `functions/email_parser.py`: parser extensible con registry por proveedor
-- `functions/word_generator.py`: generación y subida de reporte Word
-- `functions/firestore_client.py`: deduplicación idempotente con Firestore
-- `functions/config.py`: configuración general
-- `templates/stephen_template.docx`: plantilla Word
-- `create_template.py`: script para crear la plantilla
+- `functions/word_generator.py`: active OneDrive table helpers plus legacy report generator
+- `functions/firestore_client.py`: legacy Firestore dedupe helper
+- `functions/config.py`: shared Gmail config plus optional legacy/reference config
+- `templates/stephen_template.docx`: legacy/reference Stephen Word template
+- `scripts/create_template.py`: script para crear la plantilla legacy/reference
 - `setup_oauth.py`: script local para obtener refresh token
 
 ## Requisitos

@@ -292,6 +292,49 @@ def clear_rows_from_docx(docx_bytes: bytes, start_date: str = None, end_date: st
     return buf.read(), deleted
 
 
+def create_supplier_docx(supplier: dict) -> bytes:
+    """Create a new Word document with an order table for a supplier.
+
+    Base columns: Date, Item No., QTY, Color, Customer Name,
+                  Sent to Supplier, Ship by date, Sent to customer
+    Then one extra column per non-empty custom field name.
+    """
+    import io as _io
+
+    BASE_COLUMNS = [
+        "Date",
+        "Item No.",
+        "QTY",
+        "Color",
+        "Customer Name",
+        "Sent to Supplier",
+        "Ship by date",
+        "Sent to customer",
+    ]
+    custom_cols = [
+        cf.get("field_name", "").strip()
+        for cf in supplier.get("custom_fields", [])
+        if isinstance(cf, dict) and cf.get("field_name", "").strip()
+    ]
+    all_columns = BASE_COLUMNS + custom_cols
+
+    doc = Document()
+    table = doc.add_table(rows=1, cols=len(all_columns))
+    table.style = "Table Grid"
+
+    header_cells = table.rows[0].cells
+    for i, col_name in enumerate(all_columns):
+        header_cells[i].text = col_name
+        para = header_cells[i].paragraphs[0]
+        if para.runs:
+            para.runs[0].bold = True
+
+    buf = _io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
 def build_generated_timestamp() -> str:
     """Build UTC timestamp string for diagnostics and logging."""
     return datetime.now(timezone.utc).isoformat()

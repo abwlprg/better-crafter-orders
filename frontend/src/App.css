@@ -64,7 +64,10 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 .admin-key-field label { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 5px; }
 .admin-key-field input { width: 100%; background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 7px 9px; border-radius: 6px; outline: none; }
 .admin-key-field input:focus { border-color: var(--accent); }
-.field-note { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.field-note { font-size: 11px; color: var(--muted); margin-top: 0; }
+.admin-key-actions { display: flex; flex-direction: column; gap: 3px; margin-top: 5px; }
+.btn-clear-key { background: none; border: none; color: var(--danger); font-size: 11px; padding: 0; text-align: left; cursor: pointer; font-family: inherit; }
+.btn-clear-key:hover { text-decoration: underline; }
 
 /* ── Main content ────────────────────────────────────────────────── */
 .main-content { flex: 1; overflow-y: auto; padding: 28px 32px; }
@@ -137,7 +140,7 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 
 /* ── Modal ───────────────────────────────────────────────────────── */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 480px; max-width: 95vw; max-height: 85vh; overflow-y: auto; }
+.modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 560px; max-width: 95vw; max-height: 85vh; overflow-y: auto; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
 .modal-header h2 { font-size: 18px; }
 .modal-close { background: none; border: none; color: var(--muted); font-size: 20px; line-height: 1; padding: 0; }
@@ -145,6 +148,28 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 .modal-footer { margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end; }
 .modal .form-group { margin-bottom: 14px; }
 .modal .text-input, .modal .select-input { width: 100%; }
+
+/* ── Custom fields section ───────────────────────────────────────── */
+.form-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.form-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.form-section-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.custom-field-header-row,
+.custom-field-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 2fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.custom-field-header-row { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+.custom-field-row .text-input,
+.custom-field-row .select-input { min-width: 0; width: 100%; }
+.custom-field-remove { color: var(--danger) !important; border-color: rgba(229,83,83,0.3) !important; padding: 6px 9px !important; }
+.custom-field-remove:hover { background: rgba(229,83,83,0.1) !important; }
+.custom-fields-empty { font-size: 12px; color: var(--muted); padding: 8px 0; }
+
+/* ── Sandbox success message ─────────────────────────────────────── */
+.sandbox-ok-msg { background: rgba(62,207,142,0.1); border: 1px solid rgba(62,207,142,0.3); color: var(--success); padding: 8px 12px; border-radius: var(--radius); font-size: 12px; margin-top: 4px; }
 
 /* ── Supplier cards ──────────────────────────────────────────────── */
 .supplier-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }

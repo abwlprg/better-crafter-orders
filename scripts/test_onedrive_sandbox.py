@@ -296,6 +296,56 @@ def append_sandbox_row_to_docx(docx_bytes: bytes) -> tuple[bytes, int, int]:
     return append_orders_to_existing_docx(docx_bytes, [sandbox_test_order()])
 
 
+def create_sandbox_supplier_docx(
+    env: Mapping[str, str],
+    filename: str,
+    content: bytes,
+) -> dict:
+    """Upload a new supplier .docx file into the same folder as the sandbox test file.
+
+    Safety guarantees:
+    - ONEDRIVE_SANDBOX_WRITE_ENABLED must be true
+    - Uses ONEDRIVE_TEST_DRIVE_ID only — ONEDRIVE_DRIVE_ID is never used
+    - Parent folder is derived from the test file's parentReference, not hardcoded
+    - Refuses if sandbox IDs match production IDs
+
+    Returns the Microsoft Graph item metadata dict for the newly created file.
+    """
+    require_write_flag(env)
+    drive_id, test_file_id = require_sandbox_ids(env)
+    apply_runtime_environment(env)
+
+    # Resolve the sandbox parent folder from the existing test file's metadata
+    test_client = SandboxOneDriveClient(drive_id, test_file_id)
+    test_metadata = test_client.get_metadata()
+    parent_id = (test_metadata.get("parentReference") or {}).get("id", "")
+    if not parent_id:
+        raise SafetyRefusal(
+            "Cannot determine sandbox parent folder from ONEDRIVE_TEST_FILE_ID metadata"
+        )
+
+    if not filename.lower().endswith(".docx"):
+        filename = filename + ".docx"
+
+    url = (
+        f"{onedrive_client.GRAPH_BASE}/drives/{drive_id}"
+        f"/items/{parent_id}:/{filename}:/content"
+    )
+    headers = onedrive_client._headers()
+    headers["Content-Type"] = (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    response = requests.put(url, headers=headers, data=content, timeout=120)
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(
+            f"Microsoft Graph file create failed with HTTP {response.status_code}"
+        ) from exc
+
+    return response.json()
+
+
 def print_write_test(
     env: Mapping[str, str],
     make_client: Callable[[str, str], SandboxOneDriveClient] = client_factory,

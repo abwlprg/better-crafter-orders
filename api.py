@@ -88,7 +88,7 @@ class SupplierCreateRequest(BaseModel):
     onedrive_file_id: str = ""
     onedrive_drive_id: str = ""
     parser_type: str = "stephen_regex"
-    custom_fields: List[str] = Field(default_factory=list)
+    custom_fields: List[dict] = Field(default_factory=list)
     word_schema: Optional[dict] = None
 
 
@@ -100,7 +100,7 @@ class SupplierUpdateRequest(BaseModel):
     onedrive_file_id: str = ""
     onedrive_drive_id: str = ""
     parser_type: str = "stephen_regex"
-    custom_fields: List[str] = Field(default_factory=list)
+    custom_fields: List[dict] = Field(default_factory=list)
     word_schema: Optional[dict] = None
 
 
@@ -112,7 +112,7 @@ class SupplierPatchRequest(BaseModel):
     onedrive_file_id: Optional[str] = None
     onedrive_drive_id: Optional[str] = None
     parser_type: Optional[str] = None
-    custom_fields: Optional[List[str]] = None
+    custom_fields: Optional[List[dict]] = None
     word_schema: Optional[dict] = None
 
 
@@ -1052,15 +1052,27 @@ def renew_gmail_watch():
 
 @app.get("/api/config-status")
 def config_status():
-    """Public endpoint — returns only booleans, never raw values."""
+    """Public endpoint — returns only booleans/status labels, never raw values."""
     def _has(key: str) -> bool:
         val = os.environ.get(key, "").strip()
-        return bool(val) and not val.lower().startswith("placeholder_")
+        return bool(val) and not val.lower().startswith("placeholder")
+
+    def _legacy_status(key: str) -> bool | str:
+        val = os.environ.get(key, "").strip()
+        if not val:
+            return False
+        if val.lower().startswith("placeholder"):
+            return "placeholder"
+        return True
 
     sandbox_write_raw = os.environ.get("ONEDRIVE_SANDBOX_WRITE_ENABLED", "").strip().lower()
     gemini_key_present = _has("GEMINI_API_KEY")
 
     return {
+        "local": {
+            "gcp_project": _has("GCP_PROJECT"),
+            "allowed_origins": _has("ALLOWED_ORIGINS"),
+        },
         "admin_api_key": _has("ADMIN_API_KEY"),
         "gmail": {
             "account": _has("GMAIL_ACCOUNT"),
@@ -1075,8 +1087,17 @@ def config_status():
             "sandbox_drive_id": _has("ONEDRIVE_TEST_DRIVE_ID"),
             "sandbox_file_id": _has("ONEDRIVE_TEST_FILE_ID"),
             "sandbox_write_enabled": sandbox_write_raw == "true",
+        },
+        "production_later": {
             "production_drive_id": _has("ONEDRIVE_DRIVE_ID"),
             "production_file_id": _has("ONEDRIVE_FILE_ID"),
+        },
+        "legacy_reference": {
+            "storage_bucket": _legacy_status("STORAGE_BUCKET"),
+            "firestore_collection": _legacy_status("FIRESTORE_COLLECTION"),
+            "search_hours_back": _legacy_status("SEARCH_HOURS_BACK"),
+            "report_prefix": _legacy_status("REPORT_PREFIX"),
+            "template_path": _legacy_status("TEMPLATE_PATH"),
         },
         "gemini": {
             "api_key": gemini_key_present,
@@ -1123,6 +1144,70 @@ def patch_supplier(supplier_id: str, body: SupplierPatchRequest):
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/suppliers/{supplier_id}/create-sandbox-docx", dependencies=[Depends(require_admin_api_key)])
+def create_supplier_sandbox_docx(supplier_id: str):
+    """Create a new Word document for this supplier in the OneDrive sandbox folder.
+
+    Requires ONEDRIVE_SANDBOX_WRITE_ENABLED=true.
+    Uses ONEDRIVE_TEST_DRIVE_ID only — never touches production OneDrive.
+    """
+    import sys as _sys
+    _repo = Path(__file__).parent
+    if str(_repo) not in _sys.path:
+        _sys.path.insert(0, str(_repo))
+
+    from scripts.test_onedrive_sandbox import (
+        SafetyRefusal,
+        merged_environment,
+        create_sandbox_supplier_docx,
+    )
+    from functions.word_generator import create_supplier_docx
+
+    supplier = _supplier_config.get_by_id(supplier_id)
+    if not supplier:
+        raise HTTPException(status_code=404, detail=f"Supplier '{supplier_id}' not found")
+
+    raw_name = supplier.get("onedrive_file_name", "").strip()
+    if not raw_name:
+        raise HTTPException(
+            status_code=422,
+            detail="Supplier must have a OneDrive File Name before creating a document",
+        )
+    filename = raw_name if raw_name.lower().endswith(".docx") else raw_name + ".docx"
+
+    env = merged_environment()
+    try:
+        docx_bytes = create_supplier_docx(supplier)
+        item = create_sandbox_supplier_docx(env, filename, docx_bytes)
+    except SafetyRefusal as exc:
+        raise HTTPException(status_code=403, detail=f"Sandbox safety check failed: {exc}")
+    except Exception as exc:
+        logger.error(
+            "Sandbox docx creation failed for supplier=%s: %s", supplier_id, exc, exc_info=True
+        )
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    BASE_COLUMNS = [
+        "Date", "Item No.", "QTY", "Color", "Customer Name",
+        "Sent to Supplier", "Ship by date", "Sent to customer",
+    ]
+    custom_cols = [
+        cf.get("field_name", "")
+        for cf in supplier.get("custom_fields", [])
+        if isinstance(cf, dict) and cf.get("field_name", "").strip()
+    ]
+    columns = BASE_COLUMNS + custom_cols
+
+    return {
+        "status": "ok",
+        "file_name": item.get("name", filename),
+        "drive_id": (item.get("parentReference") or {}).get("driveId", ""),
+        "file_id": item.get("id", ""),
+        "columns": columns,
+        "note": "[SANDBOX] Not connected to production OneDrive.",
+    }
 
 
 # ── Run Logs ───────────────────────────────────────────────────────────────────
