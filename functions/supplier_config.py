@@ -14,6 +14,17 @@ VALID_PARSER_TYPES = {"stephen_regex", "smart"}
 VALID_FIELD_TYPES = {"text", "number", "date", "boolean"}
 VALID_FIELD_SOURCES = {"body", "subject", "pdf", "header", "manual"}
 
+# Sandbox doc metadata fields — managed only by the sandbox endpoint, not by the
+# owner-facing Add/Edit form. Preserved verbatim during PUT updates.
+_SANDBOX_KEYS = (
+    "sandbox_onedrive_drive_id",
+    "sandbox_onedrive_file_id",
+    "sandbox_onedrive_file_name",
+    "sandbox_onedrive_web_url",
+    "sandbox_doc_created_at",
+    "sandbox_doc_updated_at",
+)
+
 
 def _load() -> list[dict]:
     if not _DATA_PATH.exists():
@@ -52,6 +63,13 @@ def _normalize(data: dict) -> dict:
             _normalize_custom_field(cf) for cf in raw_fields if isinstance(cf, dict)
         ],
         "word_schema": data.get("word_schema"),
+        # Sandbox doc metadata — preserved verbatim, never overwritten by PUT
+        "sandbox_onedrive_drive_id": str(data.get("sandbox_onedrive_drive_id") or "").strip(),
+        "sandbox_onedrive_file_id": str(data.get("sandbox_onedrive_file_id") or "").strip(),
+        "sandbox_onedrive_file_name": str(data.get("sandbox_onedrive_file_name") or "").strip(),
+        "sandbox_onedrive_web_url": str(data.get("sandbox_onedrive_web_url") or "").strip(),
+        "sandbox_doc_created_at": data.get("sandbox_doc_created_at") or None,
+        "sandbox_doc_updated_at": data.get("sandbox_doc_updated_at") or None,
     }
 
 
@@ -107,10 +125,12 @@ def create(data: dict) -> dict:
 
 
 def update(supplier_id: str, data: dict) -> dict:
-    merged = dict(data)
-    merged["id"] = supplier_id
-    supplier = _normalize(merged)
-    _validate(supplier)
+    """Full replacement of a supplier record.
+
+    Sandbox metadata fields are always preserved from the existing record so that
+    a normal owner-facing PUT (which knows nothing about sandbox metadata) cannot
+    accidentally wipe them.
+    """
     with _LOCK:
         suppliers = _load()
         idx = next(
@@ -118,9 +138,33 @@ def update(supplier_id: str, data: dict) -> dict:
         )
         if idx is None:
             raise KeyError(f"Supplier '{supplier_id}' not found")
+        existing = suppliers[idx]
+        merged = dict(data)
+        merged["id"] = supplier_id
+        # Preserve sandbox metadata from the existing record if not provided
+        for key in _SANDBOX_KEYS:
+            if not merged.get(key):
+                merged[key] = existing.get(key) or ""
+        supplier = _normalize(merged)
+        _validate(supplier)
         suppliers[idx] = supplier
         _save(suppliers)
     return dict(supplier)
+
+
+def delete(supplier_id: str) -> dict:
+    """Remove a supplier record and return the deleted record."""
+    with _LOCK:
+        suppliers = _load()
+        idx = next(
+            (i for i, s in enumerate(suppliers) if s.get("id") == supplier_id), None
+        )
+        if idx is None:
+            raise KeyError(f"Supplier '{supplier_id}' not found")
+        removed = dict(suppliers[idx])
+        suppliers.pop(idx)
+        _save(suppliers)
+    return removed
 
 
 def patch(supplier_id: str, updates: dict) -> dict:
@@ -140,3 +184,13 @@ def patch(supplier_id: str, updates: dict) -> dict:
         suppliers[idx] = supplier
         _save(suppliers)
     return dict(supplier)
+
+
+def set_sandbox_metadata(supplier_id: str, metadata: dict) -> dict:
+    """Update only sandbox metadata fields on a supplier.
+
+    Only keys present in _SANDBOX_KEYS are accepted; all others are silently
+    ignored so this helper cannot accidentally overwrite business fields.
+    """
+    updates = {k: v for k, v in metadata.items() if k in _SANDBOX_KEYS}
+    return patch(supplier_id, updates)

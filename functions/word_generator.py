@@ -292,6 +292,73 @@ def clear_rows_from_docx(docx_bytes: bytes, start_date: str = None, end_date: st
     return buf.read(), deleted
 
 
+def add_missing_columns_to_docx(
+    docx_bytes: bytes,
+    required_columns: list[str],
+) -> tuple[bytes, list[str], list[str]]:
+    """Safely extend an existing .docx table with any missing header columns.
+
+    Rules:
+    - Reads row 0 as the header to determine existing column names.
+    - Appends only columns whose name is not already present.
+    - Adds an empty cell to every non-header row to keep column counts consistent.
+    - Never deletes existing rows or overwrites existing cell content.
+    - Returns (updated_bytes, existing_columns, added_columns).
+      If added_columns is empty, the returned bytes are identical to the input.
+    """
+    import io as _io
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = Document(_io.BytesIO(docx_bytes))
+    if not doc.tables:
+        raise ValueError("Document must contain at least one table")
+    table = doc.tables[0]
+    if not table.rows:
+        raise ValueError("Table must have at least one row (header)")
+
+    existing_cols = [cell.text.strip() for cell in table.rows[0].cells]
+    missing = [col for col in required_columns if col not in existing_cols]
+
+    if not missing:
+        buf = _io.BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        return buf.read(), existing_cols, []
+
+    def _new_tc():
+        tc = OxmlElement("w:tc")
+        tcp = OxmlElement("w:tcPr")
+        tc.append(tcp)
+        tc.append(OxmlElement("w:p"))
+        return tc
+
+    # Extend the table grid so column widths are declared
+    tbl = table._tbl
+    tbl_grid = tbl.find(qn("w:tblGrid"))
+    if tbl_grid is not None:
+        for _ in missing:
+            gc = OxmlElement("w:gridCol")
+            gc.set(qn("w:w"), "1440")  # 1 inch in twips; cosmetic default
+            tbl_grid.append(gc)
+
+    # Append a new cell to every existing row
+    for row in table.rows:
+        for _ in missing:
+            row._tr.append(_new_tc())
+
+    # Write column names into the new header cells
+    header_cells = table.rows[0].cells
+    for i, col_name in enumerate(missing):
+        cell = header_cells[len(existing_cols) + i]
+        cell.text = col_name
+
+    buf = _io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.read(), existing_cols, missing
+
+
 def create_supplier_docx(supplier: dict) -> bytes:
     """Create a new Word document with an order table for a supplier.
 

@@ -120,6 +120,74 @@ def upload_docx(content: bytes) -> None:
     raise RuntimeError("OneDrive file is locked after 5 retries; close the file and try again")
 
 
+def download_item(drive_id: str, file_id: str) -> bytes:
+    """Download a drive item by explicit drive_id and file_id.
+
+    Raises FileNotFoundError on 404.
+    Never reads ONEDRIVE_DRIVE_ID / ONEDRIVE_FILE_ID from env.
+    """
+    url = f"{GRAPH_BASE}/drives/{drive_id}/items/{file_id}/content"
+    r = requests.get(url, headers=_headers(), timeout=60)
+    if r.status_code == 404:
+        raise FileNotFoundError("OneDrive item not found (404)")
+    r.raise_for_status()
+    logger.info("Downloaded item (%d bytes)", len(r.content))
+    return r.content
+
+
+def upload_item(drive_id: str, file_id: str, content: bytes) -> None:
+    """Upload (replace) a drive item by explicit drive_id and file_id.
+
+    Never reads ONEDRIVE_DRIVE_ID / ONEDRIVE_FILE_ID from env.
+    Raises RuntimeError on 423 Locked rather than retrying, since sandbox
+    files should not be open during automated operations.
+    """
+    url = f"{GRAPH_BASE}/drives/{drive_id}/items/{file_id}/content"
+    headers = _headers()
+    headers["Content-Type"] = (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    r = requests.put(url, headers=headers, data=content, timeout=120)
+    if r.status_code == 423:
+        raise RuntimeError("OneDrive item is locked (423) — close the file and retry")
+    r.raise_for_status()
+    logger.info("Uploaded item (%d bytes)", len(content))
+
+
+def list_folder_children(drive_id: str, folder_id: str) -> list[dict]:
+    """Return all children of a folder, following pagination automatically."""
+    url = f"{GRAPH_BASE}/drives/{drive_id}/items/{folder_id}/children"
+    items: list[dict] = []
+    while url:
+        r = requests.get(url, headers=_headers(), timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        items.extend(data.get("value", []))
+        url = data.get("@odata.nextLink")
+    return items
+
+
+def delete_item(drive_id: str, file_id: str) -> None:
+    """Delete a OneDrive drive item by explicit drive_id and file_id.
+
+    Raises FileNotFoundError if the item does not exist (404).
+    Raises RuntimeError for other HTTP failures.
+    Never reads ONEDRIVE_DRIVE_ID / ONEDRIVE_FILE_ID from env — callers
+    must supply explicit IDs so production IDs are never used accidentally.
+    """
+    url = f"{GRAPH_BASE}/drives/{drive_id}/items/{file_id}"
+    r = requests.delete(url, headers=_headers(), timeout=30)
+    if r.status_code == 404:
+        raise FileNotFoundError("OneDrive item not found (already deleted or never existed)")
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(
+            f"Microsoft Graph delete failed with HTTP {r.status_code}"
+        ) from exc
+    logger.info("Deleted OneDrive item (drive redacted, file redacted)")
+
+
 def get_file_name() -> str:
     """Return the display name of the target file for logging/confirmation."""
     drive_id, file_id = _target_ids()

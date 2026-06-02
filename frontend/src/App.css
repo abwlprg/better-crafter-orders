@@ -171,6 +171,12 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 /* ── Sandbox success message ─────────────────────────────────────── */
 .sandbox-ok-msg { background: rgba(62,207,142,0.1); border: 1px solid rgba(62,207,142,0.3); color: var(--success); padding: 8px 12px; border-radius: var(--radius); font-size: 12px; margin-top: 4px; }
 
+/* ── Delete confirm modal ────────────────────────────────────────── */
+.delete-modal { border-color: rgba(229,83,83,0.4); }
+.delete-warning-msg { background: rgba(229,83,83,0.08); border: 1px solid rgba(229,83,83,0.25); color: var(--danger); padding: 12px 14px; border-radius: var(--radius); font-size: 13px; margin-bottom: 8px; }
+.btn-delete-supplier { color: var(--danger) !important; border-color: rgba(229,83,83,0.3) !important; }
+.btn-delete-supplier:hover { background: rgba(229,83,83,0.08) !important; border-color: var(--danger) !important; }
+
 /* ── Supplier cards ──────────────────────────────────────────────── */
 .supplier-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .supplier-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }

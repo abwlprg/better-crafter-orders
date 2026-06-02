@@ -1146,14 +1146,129 @@ def patch_supplier(supplier_id: str, body: SupplierPatchRequest):
         raise HTTPException(status_code=422, detail=str(exc))
 
 
-@app.post("/api/suppliers/{supplier_id}/create-sandbox-docx", dependencies=[Depends(require_admin_api_key)])
-def create_supplier_sandbox_docx(supplier_id: str):
-    """Create a new Word document for this supplier in the OneDrive sandbox folder.
+@app.delete("/api/suppliers/{supplier_id}", dependencies=[Depends(require_admin_api_key)])
+def delete_supplier(supplier_id: str):
+    """Delete a supplier from the app and attempt to remove its associated OneDrive files.
 
-    Requires ONEDRIVE_SANDBOX_WRITE_ENABLED=true.
-    Uses ONEDRIVE_TEST_DRIVE_ID only — never touches production OneDrive.
+    Sandbox deletion: uses sandbox_onedrive_drive_id / sandbox_onedrive_file_id.
+        Requires ONEDRIVE_SANDBOX_WRITE_ENABLED=true.
+    Production deletion: uses onedrive_drive_id / onedrive_file_id.
+        Requires ONEDRIVE_PRODUCTION_DELETE_ENABLED=true (blocked by default).
+    The supplier is always removed from the app regardless of OneDrive outcome.
+    """
+    from functions.onedrive_client import delete_item as _delete_item
+
+    supplier = _supplier_config.get_by_id(supplier_id)
+    if not supplier:
+        raise HTTPException(status_code=404, detail=f"Supplier '{supplier_id}' not found")
+
+    warnings: list[str] = []
+    onedrive_attempted = False
+    onedrive_deleted   = False
+    sandbox_deleted    = False
+
+    # ── Sandbox document deletion ──────────────────────────────────────────────
+    sb_drive_id = supplier.get("sandbox_onedrive_drive_id", "").strip()
+    sb_file_id  = supplier.get("sandbox_onedrive_file_id",  "").strip()
+
+    if sb_drive_id and sb_file_id:
+        sb_write_ok = (
+            os.environ.get("ONEDRIVE_SANDBOX_WRITE_ENABLED", "").strip().lower() == "true"
+        )
+        if not sb_write_ok:
+            warnings.append(
+                "Sandbox doc deletion skipped: ONEDRIVE_SANDBOX_WRITE_ENABLED is not true."
+            )
+        else:
+            onedrive_attempted = True
+            try:
+                _delete_item(sb_drive_id, sb_file_id)
+                onedrive_deleted = True
+                sandbox_deleted  = True
+            except FileNotFoundError:
+                warnings.append(
+                    "Sandbox OneDrive file was already missing — supplier still removed."
+                )
+            except Exception as exc:
+                logger.error(
+                    "Sandbox delete failed for supplier=%s: %s", supplier_id, exc, exc_info=True
+                )
+                warnings.append(f"Sandbox OneDrive deletion failed: {str(exc)[:200]}")
+
+    # ── Production document deletion (blocked unless explicitly enabled) ────────
+    prod_file_id  = supplier.get("onedrive_file_id",  "").strip()
+    prod_drive_id = supplier.get("onedrive_drive_id", "").strip()
+
+    if prod_file_id and prod_drive_id:
+        prod_delete_ok = (
+            os.environ.get("ONEDRIVE_PRODUCTION_DELETE_ENABLED", "").strip().lower() == "true"
+        )
+        if not prod_delete_ok:
+            warnings.append(
+                "Production doc deletion skipped: ONEDRIVE_PRODUCTION_DELETE_ENABLED is not true."
+            )
+        else:
+            onedrive_attempted = True
+            try:
+                _delete_item(prod_drive_id, prod_file_id)
+                onedrive_deleted = True
+            except FileNotFoundError:
+                warnings.append("Production OneDrive file was already missing.")
+            except Exception as exc:
+                logger.error(
+                    "Production delete failed for supplier=%s: %s", supplier_id, exc, exc_info=True
+                )
+                warnings.append(f"Production OneDrive deletion failed: {str(exc)[:200]}")
+
+    if not sb_drive_id and not prod_drive_id:
+        warnings.append("No OneDrive file metadata on this supplier — removed from app only.")
+
+    # Delete from app regardless of OneDrive outcome
+    app_deleted = False
+    try:
+        _supplier_config.delete(supplier_id)
+        app_deleted = True
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    try:
+        _run_log.append_delete_entry(
+            supplier_id=supplier_id,
+            app_supplier_deleted=app_deleted,
+            onedrive_delete_attempted=onedrive_attempted,
+            onedrive_deleted=onedrive_deleted,
+            warnings=warnings,
+        )
+    except Exception as _log_exc:
+        logger.warning("Failed to write delete run log: %s", _log_exc)
+
+    return {
+        "status": "ok",
+        "supplier_id": supplier_id,
+        "app_supplier_deleted": app_deleted,
+        "onedrive_delete_attempted": onedrive_attempted,
+        "onedrive_deleted": onedrive_deleted,
+        "sandbox_deleted": sandbox_deleted,
+        "warnings": warnings,
+    }
+
+
+@app.post("/api/suppliers/{supplier_id}/create-sandbox-docx", dependencies=[Depends(require_admin_api_key)])
+def create_or_update_supplier_sandbox_docx(supplier_id: str):
+    """Idempotent sandbox document create/update.
+
+    - No sandbox metadata on supplier → create new doc, store metadata.
+    - Sandbox metadata present, file exists → download, add only missing columns,
+      re-upload. Existing rows are never touched.
+    - Sandbox metadata present, file missing → clear stale metadata, then
+      search by filename or create fresh.
+    - File already exists in sandbox folder by name → attach it, add missing columns.
+    - Repeated calls: no duplicate files, no duplicate columns, no row loss.
+    Requires ONEDRIVE_SANDBOX_WRITE_ENABLED=true. Never touches production OneDrive.
     """
     import sys as _sys
+    from datetime import timezone as _tz
+
     _repo = Path(__file__).parent
     if str(_repo) not in _sys.path:
         _sys.path.insert(0, str(_repo))
@@ -1161,9 +1276,14 @@ def create_supplier_sandbox_docx(supplier_id: str):
     from scripts.test_onedrive_sandbox import (
         SafetyRefusal,
         merged_environment,
-        create_sandbox_supplier_docx,
+        require_sandbox_ids,
+        apply_runtime_environment,
+        create_sandbox_supplier_docx as _create_new_file,
+        find_sandbox_file_by_name,
+        update_sandbox_item,
     )
-    from functions.word_generator import create_supplier_docx
+    from functions.word_generator import create_supplier_docx, add_missing_columns_to_docx
+    from functions.onedrive_client import download_item
 
     supplier = _supplier_config.get_by_id(supplier_id)
     if not supplier:
@@ -1177,18 +1297,6 @@ def create_supplier_sandbox_docx(supplier_id: str):
         )
     filename = raw_name if raw_name.lower().endswith(".docx") else raw_name + ".docx"
 
-    env = merged_environment()
-    try:
-        docx_bytes = create_supplier_docx(supplier)
-        item = create_sandbox_supplier_docx(env, filename, docx_bytes)
-    except SafetyRefusal as exc:
-        raise HTTPException(status_code=403, detail=f"Sandbox safety check failed: {exc}")
-    except Exception as exc:
-        logger.error(
-            "Sandbox docx creation failed for supplier=%s: %s", supplier_id, exc, exc_info=True
-        )
-        raise HTTPException(status_code=500, detail=str(exc))
-
     BASE_COLUMNS = [
         "Date", "Item No.", "QTY", "Color", "Customer Name",
         "Sent to Supplier", "Ship by date", "Sent to customer",
@@ -1198,15 +1306,134 @@ def create_supplier_sandbox_docx(supplier_id: str):
         for cf in supplier.get("custom_fields", [])
         if isinstance(cf, dict) and cf.get("field_name", "").strip()
     ]
-    columns = BASE_COLUMNS + custom_cols
+    required_columns = BASE_COLUMNS + custom_cols
 
+    env = merged_environment()
+    warnings: list[str] = []
+    action = "created"
+    added_cols: list[str] = []
+
+    sb_drive_id = supplier.get("sandbox_onedrive_drive_id", "").strip()
+    sb_file_id  = supplier.get("sandbox_onedrive_file_id",  "").strip()
+
+    # ── Path A: existing sandbox metadata ──────────────────────────────────────
+    if sb_drive_id and sb_file_id:
+        try:
+            docx_bytes = download_item(sb_drive_id, sb_file_id)
+            updated_bytes, _existing, added_cols = add_missing_columns_to_docx(
+                docx_bytes, required_columns
+            )
+            if added_cols:
+                update_sandbox_item(env, sb_drive_id, sb_file_id, updated_bytes)
+            else:
+                warnings.append("Document already has all required columns — no changes needed.")
+            _supplier_config.set_sandbox_metadata(supplier_id, {
+                "sandbox_doc_updated_at": datetime.now(_tz.utc).isoformat(),
+            })
+            supplier = _supplier_config.get_by_id(supplier_id)
+            action = "updated"
+            return {
+                "status": "ok",
+                "action": action,
+                "file_name": supplier.get("sandbox_onedrive_file_name", filename),
+                "columns": required_columns,
+                "added_columns": added_cols,
+                "warnings": warnings,
+                "note": "[SANDBOX] Not connected to production OneDrive.",
+                "supplier": supplier,
+            }
+        except FileNotFoundError:
+            warnings.append(
+                "Previous sandbox file was missing; searching by name or creating a new one."
+            )
+            _supplier_config.set_sandbox_metadata(supplier_id, {
+                "sandbox_onedrive_drive_id": "",
+                "sandbox_onedrive_file_id":  "",
+                "sandbox_onedrive_file_name": "",
+                "sandbox_onedrive_web_url":   "",
+            })
+        except SafetyRefusal as exc:
+            raise HTTPException(status_code=403, detail=f"Sandbox safety check failed: {exc}")
+        except Exception as exc:
+            logger.error(
+                "Sandbox update failed supplier=%s: %s", supplier_id, exc, exc_info=True
+            )
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    # ── Path B: no metadata (or just cleared) — find by name or create ─────────
+    try:
+        existing = find_sandbox_file_by_name(env, filename)
+    except SafetyRefusal as exc:
+        raise HTTPException(status_code=403, detail=f"Sandbox safety check failed: {exc}")
+    except Exception as exc:
+        logger.error("find_sandbox_file_by_name failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    now = datetime.now(_tz.utc).isoformat()
+    # drive_id for sandbox is always ONEDRIVE_TEST_DRIVE_ID
+    _drive_id, _ = require_sandbox_ids(env)
+    apply_runtime_environment(env)
+
+    if existing:
+        # File found by name — attach metadata and add any missing columns
+        found_file_id  = existing["id"]
+        found_web_url  = existing.get("webUrl", "")
+        found_name     = existing.get("name", filename)
+        try:
+            docx_bytes = download_item(_drive_id, found_file_id)
+            updated_bytes, _existing_cols, added_cols = add_missing_columns_to_docx(
+                docx_bytes, required_columns
+            )
+            if added_cols:
+                update_sandbox_item(env, _drive_id, found_file_id, updated_bytes)
+            else:
+                warnings.append("Document already has all required columns — no changes needed.")
+        except SafetyRefusal as exc:
+            raise HTTPException(status_code=403, detail=f"Sandbox safety check failed: {exc}")
+        except Exception as exc:
+            logger.error("Sandbox attach-and-update failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=str(exc))
+        _supplier_config.set_sandbox_metadata(supplier_id, {
+            "sandbox_onedrive_drive_id":  _drive_id,
+            "sandbox_onedrive_file_id":   found_file_id,
+            "sandbox_onedrive_file_name": found_name,
+            "sandbox_onedrive_web_url":   found_web_url,
+            "sandbox_doc_created_at":     now,
+            "sandbox_doc_updated_at":     now,
+        })
+        warnings.append(f"Attached to existing sandbox file '{found_name}'.")
+        action = "attached_and_updated"
+    else:
+        # Create brand-new doc
+        try:
+            new_bytes = create_supplier_docx(supplier)
+            item = _create_new_file(env, filename, new_bytes)
+        except SafetyRefusal as exc:
+            raise HTTPException(status_code=403, detail=f"Sandbox safety check failed: {exc}")
+        except Exception as exc:
+            logger.error("Sandbox doc creation failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=str(exc))
+        _supplier_config.set_sandbox_metadata(supplier_id, {
+            "sandbox_onedrive_drive_id":  _drive_id,
+            "sandbox_onedrive_file_id":   item.get("id", ""),
+            "sandbox_onedrive_file_name": item.get("name", filename),
+            "sandbox_onedrive_web_url":   item.get("webUrl", ""),
+            "sandbox_doc_created_at":     now,
+            "sandbox_doc_updated_at":     now,
+        })
+        added_cols = required_columns
+        action = "created"
+
+    supplier = _supplier_config.get_by_id(supplier_id)
     return {
         "status": "ok",
-        "file_name": item.get("name", filename),
-        "drive_id": (item.get("parentReference") or {}).get("driveId", ""),
-        "file_id": item.get("id", ""),
-        "columns": columns,
+        "action": action,
+        "file_name": supplier.get("sandbox_onedrive_file_name", filename),
+        "columns": required_columns,
+        "added_columns": added_cols,
+        "warnings": warnings,
         "note": "[SANDBOX] Not connected to production OneDrive.",
+        "supplier": supplier,
     }
 
 

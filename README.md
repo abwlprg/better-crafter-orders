@@ -22,12 +22,14 @@ from WSL, run `code .env`. Do not print `.env`; do not use terminal editors like
 ### Completed stabilization PRs
 
 PR #1 - remove hardcoded Microsoft OneDrive credentials
+
 - Moved Microsoft / OneDrive config out of tracked source and into env-driven configuration.
 - Added `.env.example` placeholders.
 - Guarded unsafe deploy script behavior.
 - Commit: `715638e`
 
 PR #2 - protect write endpoints with admin API key
+
 - Protected dangerous write/delete/external-state routes with `ADMIN_API_KEY` / `X-Admin-API-Key`.
 - Kept `/api/health` public.
 - Protected:
@@ -39,6 +41,7 @@ PR #2 - protect write endpoints with admin API key
 - Commit: `c64c339`
 
 PR #3 - normalize parser results in API order paths
+
 - Normalized parser outputs from `None`, legacy `dict`, empty list, and `list[dict]`.
 - Preserved multi-item parser results.
 - Validates rows individually.
@@ -46,6 +49,7 @@ PR #3 - normalize parser results in API order paths
 - Commit: `80247a1`
 
 PR #4 - frontend endpoint alignment
+
 - Preview/fetch uses implemented read endpoint `/api/orders-stream`.
 - Removed active frontend calls to missing `/api/generate-report` and `/api/download-report/...`.
 - OneDrive write action is disabled/protected in the UI during stabilization.
@@ -376,3 +380,80 @@ firebase deploy --only functions
 ```bash
 python -m unittest discover -s tests -p "test_*.py"
 ```
+
+## Manual Fetch Orders (UI)
+
+The Fetch Orders page in the 2.0 admin UI supports:
+
+- Supplier selector: individual supplier or all active suppliers
+- Quick-range buttons: Last 24h, Last 7 days, Last 30 days
+- Custom date range via date pickers
+- Dry-run only (`dry_run: true` is hardcoded in the UI)
+- `write_target` defaults to `"none"` — no OneDrive writes
+- Structured JSON result with per-supplier email/order counts and sanitized preview rows
+
+Manual fetch does **not** call `/api/append-to-onedrive`, `/api/daily-update`, or
+`/api/clear-onedrive-rows`. It calls only `POST /api/batch-orders` with
+`dry_run: true`.
+
+## 2:00 AM Scheduled Run — Audit Result
+
+### Legacy Firebase scheduled function (reference path)
+
+`functions/main.py` contains `process_stephen_orders`, a Firebase Cloud Functions v2
+scheduled function:
+
+```python
+@scheduler_fn.on_schedule(
+    schedule="0 2 * * *",
+    timezone=scheduler_fn.Timezone("America/New_York"),
+    ...
+)
+def process_stephen_orders(event): ...
+```
+
+This is the **original Firebase Functions** path from the prototype era. It is
+**not** part of the 2.0 FastAPI backend (`api.py`). It uses the old Firestore
+deduplication, old `WordReportGenerator`, and the legacy Stephen-only workflow.
+It is kept as reference/legacy material only.
+
+### 2.0 FastAPI backend (active path)
+
+The 2.0 backend exposes `POST /api/daily-update` as the production-ready
+scheduled-run endpoint. **This endpoint is not automatically triggered by
+anything.** No Cloud Scheduler job, cron, or external timer currently calls it.
+
+### What is currently automatic
+
+Nothing in 2.0 runs automatically at 2:00 AM or on any schedule.
+
+### What is needed for production scheduling
+
+To restore the 2:00 AM run via the 2.0 FastAPI backend:
+
+1. Deploy 2.0 to Cloud Run (or equivalent).
+2. Create a **Cloud Scheduler** job:
+   - Schedule: `0 2 * * *` (America/New_York)
+   - Target: `POST https://<2.0-backend-url>/api/daily-update?days=1`
+   - Header: `X-Admin-API-Key: <production-admin-key>` (or replace with a
+     scheduler-only OIDC auth token)
+3. Confirm `ONEDRIVE_DRIVE_ID`, `ONEDRIVE_FILE_ID`, and all Gmail credentials
+   are correctly set in the production Cloud Run service.
+4. Verify at least one manual `POST /api/daily-update` succeeds before enabling
+   the schedule.
+5. Monitor Cloud Scheduler execution history and Cloud Run logs after the first
+   automated run.
+
+### Recommended future improvements before production scheduling
+
+- Replace the `X-Admin-API-Key` header with Cloud Scheduler OIDC authentication
+  so the production endpoint is not callable publicly.
+- Add idempotency: track already-processed Gmail message IDs (Firestore or
+  equivalent) so retries do not duplicate orders.
+- Add a configurable lookback window (`SEARCH_HOURS_BACK`) so the scheduler can
+  safely use `days=1` without missing late-arriving emails.
+- The production scheduler is not considered live until deployed, tested, and
+  explicitly verified by Leo or an authorized admin.
+
+**Production scheduling must be explicitly enabled and verified. It does not
+happen automatically from the 2.0 codebase alone.**

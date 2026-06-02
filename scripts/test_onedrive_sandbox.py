@@ -296,6 +296,66 @@ def append_sandbox_row_to_docx(docx_bytes: bytes) -> tuple[bytes, int, int]:
     return append_orders_to_existing_docx(docx_bytes, [sandbox_test_order()])
 
 
+def find_sandbox_file_by_name(
+    env: Mapping[str, str],
+    filename: str,
+) -> dict | None:
+    """Search the sandbox parent folder for an item whose name matches filename.
+
+    Returns the Graph API item metadata dict if found, or None.
+    Read-only: does not require the write flag.
+    Requires ONEDRIVE_TEST_DRIVE_ID and ONEDRIVE_TEST_FILE_ID to locate
+    the parent folder via the test file's parentReference.
+    """
+    drive_id, test_file_id = require_sandbox_ids(env)
+    apply_runtime_environment(env)
+
+    test_client = SandboxOneDriveClient(drive_id, test_file_id)
+    test_metadata = test_client.get_metadata()
+    parent_id = (test_metadata.get("parentReference") or {}).get("id", "")
+    if not parent_id:
+        return None
+
+    children = onedrive_client.list_folder_children(drive_id, parent_id)
+    return next(
+        (c for c in children if c.get("name", "").lower() == filename.lower()),
+        None,
+    )
+
+
+def update_sandbox_item(
+    env: Mapping[str, str],
+    drive_id: str,
+    file_id: str,
+    content: bytes,
+) -> None:
+    """Upload updated content to an existing sandbox OneDrive item.
+
+    Safety checks:
+    - ONEDRIVE_SANDBOX_WRITE_ENABLED must be true
+    - drive_id must match ONEDRIVE_TEST_DRIVE_ID (case-insensitive)
+    - drive_id must not match production ONEDRIVE_DRIVE_ID
+    """
+    require_write_flag(env)
+    apply_runtime_environment(env)
+
+    test_drive_id = env.get("ONEDRIVE_TEST_DRIVE_ID", "").strip()
+    if not _configured(test_drive_id):
+        raise SafetyRefusal("ONEDRIVE_TEST_DRIVE_ID is not configured")
+    if drive_id.lower() != test_drive_id.lower():
+        raise SafetyRefusal(
+            "Provided drive_id does not match ONEDRIVE_TEST_DRIVE_ID — update refused"
+        )
+
+    prod_drive_id = env.get("ONEDRIVE_DRIVE_ID", "").strip()
+    if prod_drive_id and drive_id.lower() == prod_drive_id.lower():
+        raise SafetyRefusal(
+            "drive_id matches production ONEDRIVE_DRIVE_ID — update refused"
+        )
+
+    onedrive_client.upload_item(drive_id, file_id, content)
+
+
 def create_sandbox_supplier_docx(
     env: Mapping[str, str],
     filename: str,
