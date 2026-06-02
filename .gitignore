@@ -36,3 +36,5 @@ client_secret_*.json
 *firebase-adminsdk*.json
 credentials*.json
 token*.json
+
+.gmail_refresh_token.txt
