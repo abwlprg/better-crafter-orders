@@ -1,3 +1,6 @@
+# Runtime data — never commit
+data/run_logs.json
+
 functions/venv/
 .venv/
 __pycache__/

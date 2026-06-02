@@ -44,6 +44,7 @@ class BatchOrdersRequest(BaseModel):
     start_date: str
     end_date: str
     dry_run: bool = True
+    write_target: str = "none"
     include_orders: bool = False
     max_preview_rows: int = Field(default=100, ge=0)
 
@@ -70,8 +71,55 @@ class BatchOrdersRequest(BaseModel):
             raise ValueError("date must use YYYY-MM-DD format")
         return value
 
+    @field_validator("write_target")
+    @classmethod
+    def write_target_must_be_valid(cls, value: str) -> str:
+        if value not in ("none", "sandbox"):
+            raise ValueError("write_target must be 'none' or 'sandbox'")
+        return value
+
+
+class SupplierCreateRequest(BaseModel):
+    id: str
+    name: str
+    email: str = ""
+    status: str = "active"
+    onedrive_file_name: str = ""
+    onedrive_file_id: str = ""
+    onedrive_drive_id: str = ""
+    parser_type: str = "stephen_regex"
+    custom_fields: List[str] = Field(default_factory=list)
+    word_schema: Optional[dict] = None
+
+
+class SupplierUpdateRequest(BaseModel):
+    name: str
+    email: str = ""
+    status: str = "active"
+    onedrive_file_name: str = ""
+    onedrive_file_id: str = ""
+    onedrive_drive_id: str = ""
+    parser_type: str = "stephen_regex"
+    custom_fields: List[str] = Field(default_factory=list)
+    word_schema: Optional[dict] = None
+
+
+class SupplierPatchRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    status: Optional[str] = None
+    onedrive_file_name: Optional[str] = None
+    onedrive_file_id: Optional[str] = None
+    onedrive_drive_id: Optional[str] = None
+    parser_type: Optional[str] = None
+    custom_fields: Optional[List[str]] = None
+    word_schema: Optional[dict] = None
+
+
 from functions.email_parser import PARSER_REGISTRY, get_parser
 from functions.gmail_client import GmailClient
+from functions import supplier_config as _supplier_config
+from functions import run_log as _run_log
 from scripts.check_config import get_config_diagnostics
 
 # ── Hardcoded business constants ──────────────────
@@ -297,13 +345,27 @@ def batch_orders(body: BatchOrdersRequest):
         for supplier_id in body.supplier_ids
         if supplier_id not in SUPPORTED_BATCH_SUPPLIERS
     ]
+    # Build a merged supplier map: hardcoded fallback + configured suppliers
+    _config_suppliers = {
+        s["id"]: {
+            "supplier_id": s["id"],
+            "supplier_name": s["name"],
+            "supplier_email": s.get("email", ""),
+            "parser_key": "stephen" if s.get("parser_type") in ("stephen_regex", None) else "stephen",
+        }
+        for s in _supplier_config.get_all()
+        if s.get("email", "").strip()
+    }
+    _all_suppliers = {**_config_suppliers, **SUPPORTED_BATCH_SUPPLIERS}
+
+    unsupported = [sid for sid in body.supplier_ids if sid not in _all_suppliers]
     if unsupported:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
                 "message": "Unsupported supplier_id requested",
                 "unsupported_supplier_ids": unsupported,
-                "supported_supplier_ids": sorted(SUPPORTED_BATCH_SUPPLIERS),
+                "supported_supplier_ids": sorted(_all_suppliers),
             },
         )
 
@@ -321,7 +383,7 @@ def batch_orders(body: BatchOrdersRequest):
     )
 
     for supplier_id in body.supplier_ids:
-        supplier = SUPPORTED_BATCH_SUPPLIERS[supplier_id]
+        supplier = _all_suppliers[supplier_id]
         supplier_errors: list[str] = []
         orders: list[dict] = []
         invalid_rows_total = 0
@@ -388,6 +450,24 @@ def batch_orders(body: BatchOrdersRequest):
             would_append,
             len(supplier_errors),
         )
+
+    total_parsed = sum(s["orders_parsed"] for s in suppliers)
+    total_emails = sum(s["emails_found"] for s in suppliers)
+    any_errors = any(s["errors"] for s in suppliers)
+    try:
+        _run_log.append_entry(
+            supplier_ids=body.supplier_ids,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            emails_found=total_emails,
+            orders_parsed=total_parsed,
+            orders_written=0,
+            orders_skipped=0,
+            dry_run=True,
+            status="error" if any_errors else "ok",
+        )
+    except Exception as _log_exc:
+        logger.warning("Failed to write run log: %s", _log_exc)
 
     return {
         "status": "ok",
@@ -968,6 +1048,150 @@ def renew_gmail_watch():
     except Exception as e:
         logger.error("💥 Failed to renew Gmail watch: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/config-status")
+def config_status():
+    """Public endpoint — returns only booleans, never raw values."""
+    def _has(key: str) -> bool:
+        val = os.environ.get(key, "").strip()
+        return bool(val) and not val.lower().startswith("placeholder_")
+
+    sandbox_write_raw = os.environ.get("ONEDRIVE_SANDBOX_WRITE_ENABLED", "").strip().lower()
+    gemini_key_present = _has("GEMINI_API_KEY")
+
+    return {
+        "admin_api_key": _has("ADMIN_API_KEY"),
+        "gmail": {
+            "account": _has("GMAIL_ACCOUNT"),
+            "client_id": _has("GMAIL_CLIENT_ID"),
+            "client_secret": _has("GMAIL_CLIENT_SECRET"),
+            "refresh_token": _has("GMAIL_REFRESH_TOKEN"),
+        },
+        "onedrive": {
+            "client_id": _has("MS_CLIENT_ID"),
+            "tenant_id": _has("MS_TENANT_ID"),
+            "refresh_token": _has("MS_REFRESH_TOKEN"),
+            "sandbox_drive_id": _has("ONEDRIVE_TEST_DRIVE_ID"),
+            "sandbox_file_id": _has("ONEDRIVE_TEST_FILE_ID"),
+            "sandbox_write_enabled": sandbox_write_raw == "true",
+            "production_drive_id": _has("ONEDRIVE_DRIVE_ID"),
+            "production_file_id": _has("ONEDRIVE_FILE_ID"),
+        },
+        "gemini": {
+            "api_key": gemini_key_present,
+            "enabled": False,
+            "reason": "billing_or_quota_not_confirmed",
+        },
+    }
+
+
+# ── Supplier CRUD ──────────────────────────────────────────────────────────────
+
+@app.get("/api/suppliers", dependencies=[Depends(require_admin_api_key)])
+def list_suppliers():
+    return {"suppliers": _supplier_config.get_all()}
+
+
+@app.post("/api/suppliers", status_code=201, dependencies=[Depends(require_admin_api_key)])
+def create_supplier(body: SupplierCreateRequest):
+    try:
+        supplier = _supplier_config.create(body.model_dump())
+        return {"supplier": supplier}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.put("/api/suppliers/{supplier_id}", dependencies=[Depends(require_admin_api_key)])
+def replace_supplier(supplier_id: str, body: SupplierUpdateRequest):
+    try:
+        supplier = _supplier_config.update(supplier_id, body.model_dump())
+        return {"supplier": supplier}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.patch("/api/suppliers/{supplier_id}", dependencies=[Depends(require_admin_api_key)])
+def patch_supplier(supplier_id: str, body: SupplierPatchRequest):
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    try:
+        supplier = _supplier_config.patch(supplier_id, updates)
+        return {"supplier": supplier}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ── Run Logs ───────────────────────────────────────────────────────────────────
+
+@app.get("/api/run-logs", dependencies=[Depends(require_admin_api_key)])
+def get_run_logs(limit: int = Query(default=100, ge=1, le=500)):
+    return {"run_logs": _run_log.get_all(limit=limit)}
+
+
+# ── Sandbox Write ──────────────────────────────────────────────────────────────
+
+@app.post("/api/sandbox/write-dummy-order", dependencies=[Depends(require_admin_api_key)])
+def sandbox_write_dummy_order():
+    """Write one clearly-marked dummy row to the sandbox OneDrive file.
+
+    Safety checks (all enforced):
+    - ONEDRIVE_SANDBOX_WRITE_ENABLED=true
+    - ONEDRIVE_TEST_DRIVE_ID and ONEDRIVE_TEST_FILE_ID must be set
+    - Test IDs must not match production ONEDRIVE_DRIVE_ID / ONEDRIVE_FILE_ID
+    - Sandbox file name must include TEST, SANDBOX, COPY, or CLONE
+    """
+    import sys
+    from pathlib import Path as _Path
+
+    _repo = _Path(__file__).parent
+    if str(_repo) not in sys.path:
+        sys.path.insert(0, str(_repo))
+
+    from scripts.test_onedrive_sandbox import (
+        SafetyRefusal,
+        merged_environment,
+        require_sandbox_ids,
+        require_write_flag,
+        apply_runtime_environment,
+        client_factory,
+        require_sandbox_metadata,
+        append_sandbox_row_to_docx,
+    )
+
+    env = merged_environment()
+    try:
+        require_write_flag(env)
+        drive_id, file_id = require_sandbox_ids(env)
+        apply_runtime_environment(env)
+        client = client_factory(drive_id, file_id)
+        metadata = client.get_metadata()
+        safe_name = require_sandbox_metadata(metadata)
+
+        original_docx = client.download_docx()
+        updated_docx, appended, _skipped = append_sandbox_row_to_docx(original_docx)
+        if appended != 1:
+            raise RuntimeError(
+                f"Sandbox write expected exactly 1 appended row, got {appended}"
+            )
+        client.upload_docx(updated_docx)
+
+        logger.info("Sandbox dummy write succeeded: file=%s rows_appended=%d", safe_name, appended)
+        return {
+            "status": "ok",
+            "file_name": safe_name,
+            "rows_appended": appended,
+            "note": "Dummy row written to sandbox/test file only. Never touches production.",
+        }
+    except SafetyRefusal as exc:
+        logger.warning("Sandbox write refused: %s", exc)
+        raise HTTPException(status_code=403, detail=f"Safety check failed: {exc}")
+    except Exception as exc:
+        logger.error("Sandbox write failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/api/health")
