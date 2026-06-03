@@ -8,18 +8,24 @@ function StatusBadge({ value }) {
   return <span className="badge badge-grey">—</span>
 }
 
-export default function Settings() {
+export default function Settings({ adminKey }) {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch(`${API_URL}/config-status`)
+    if (!adminKey) {
+      setLoading(false)
+      return
+    }
+    fetch(`${API_URL}/config-status`, {
+      headers: { 'X-Admin-API-Key': adminKey },
+    })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(setStatus)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-  }, [])
+  }, [adminKey])
 
   return (
     <div>
@@ -28,7 +34,8 @@ export default function Settings() {
         <p>Configuration status only — raw secrets are never shown in the browser.</p>
       </div>
 
-      {loading && <p style={{ color: 'var(--muted)' }}>Loading config status…</p>}
+      {!adminKey && <div className="error-msg">Enter your admin key in the sidebar to view configuration status.</div>}
+      {loading && adminKey && <p style={{ color: 'var(--muted)' }}>Loading config status…</p>}
       {error && <div className="error-msg">{error}</div>}
 
       {status && (

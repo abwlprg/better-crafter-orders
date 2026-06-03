@@ -33,12 +33,18 @@ class TestAdminApiKeyGuard(unittest.TestCase):
     def test_route_dependencies_are_applied_to_protected_endpoints(self) -> None:
         routes = {getattr(route, "path", ""): route for route in api.app.routes}
         protected_paths = {
+            # Write / external-state endpoints
             "/api/batch-orders",
             "/api/append-to-onedrive",
             "/api/gmail-webhook",
             "/api/clear-onedrive-rows",
             "/api/daily-update",
             "/api/renew-gmail-watch",
+            # Gmail-reading endpoints (P0 fix)
+            "/api/orders",
+            "/api/orders-stream",
+            # Config-status (P0 fix — reveals which services are configured)
+            "/api/config-status",
         }
 
         for path in protected_paths:
@@ -52,6 +58,42 @@ class TestAdminApiKeyGuard(unittest.TestCase):
         self.assertFalse(
             any(dep.call is api.require_admin_api_key for dep in health_dependant.dependencies)
         )
+
+    def test_orders_rejects_missing_key(self) -> None:
+        os.environ["ADMIN_API_KEY"] = "unit-test-admin-key"
+        with self.assertRaises(HTTPException) as ctx:
+            api.require_admin_api_key(None)
+        self.assertIn(ctx.exception.status_code, {401, 403})
+
+    def test_orders_rejects_wrong_key(self) -> None:
+        os.environ["ADMIN_API_KEY"] = "unit-test-admin-key"
+        with self.assertRaises(HTTPException) as ctx:
+            api.require_admin_api_key("wrong-key")
+        self.assertIn(ctx.exception.status_code, {401, 403})
+
+    def test_orders_stream_rejects_missing_key(self) -> None:
+        os.environ["ADMIN_API_KEY"] = "unit-test-admin-key"
+        with self.assertRaises(HTTPException) as ctx:
+            api.require_admin_api_key(None)
+        self.assertIn(ctx.exception.status_code, {401, 403})
+
+    def test_orders_stream_rejects_wrong_key(self) -> None:
+        os.environ["ADMIN_API_KEY"] = "unit-test-admin-key"
+        with self.assertRaises(HTTPException) as ctx:
+            api.require_admin_api_key("wrong-key")
+        self.assertIn(ctx.exception.status_code, {401, 403})
+
+    def test_config_status_rejects_missing_key(self) -> None:
+        os.environ["ADMIN_API_KEY"] = "unit-test-admin-key"
+        with self.assertRaises(HTTPException) as ctx:
+            api.require_admin_api_key(None)
+        self.assertIn(ctx.exception.status_code, {401, 403})
+
+    def test_config_status_rejects_wrong_key(self) -> None:
+        os.environ["ADMIN_API_KEY"] = "unit-test-admin-key"
+        with self.assertRaises(HTTPException) as ctx:
+            api.require_admin_api_key("wrong-key")
+        self.assertIn(ctx.exception.status_code, {401, 403})
 
     def test_missing_admin_key_fails_closed(self) -> None:
         os.environ.pop("ADMIN_API_KEY", None)

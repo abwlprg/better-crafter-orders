@@ -1,5 +1,9 @@
 # Runtime data — never commit
 data/run_logs.json
+# suppliers.json is runtime data; may contain real email routing addresses,
+# sandbox OneDrive file/drive IDs, and eventually production OneDrive metadata.
+# Use data/suppliers.example.json as a safe seed/reference. Never commit this file.
+data/suppliers.json
 
 functions/venv/
 .venv/

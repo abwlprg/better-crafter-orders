@@ -1,0 +1,27 @@
+[
+  {
+    "id": "example-supplier",
+    "name": "Example Supplier",
+    "email": "supplier@example.com",
+    "status": "active",
+    "onedrive_file_name": "Example Supplier 2026",
+    "onedrive_file_id": "",
+    "onedrive_drive_id": "",
+    "parser_type": "stephen_regex",
+    "custom_fields": [
+      {
+        "field_name": "Brand",
+        "type": "text",
+        "source": "body",
+        "hint": "Brand:"
+      }
+    ],
+    "word_schema": null,
+    "sandbox_onedrive_drive_id": "",
+    "sandbox_onedrive_file_id": "",
+    "sandbox_onedrive_file_name": "",
+    "sandbox_onedrive_web_url": "",
+    "sandbox_doc_created_at": null,
+    "sandbox_doc_updated_at": null
+  }
+]

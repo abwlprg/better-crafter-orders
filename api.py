@@ -480,7 +480,7 @@ def batch_orders(body: BatchOrdersRequest):
     }
 
 
-@app.get("/api/orders-stream")
+@app.get("/api/orders-stream", dependencies=[Depends(require_admin_api_key)])
 def fetch_orders_stream(start_date: str = None, end_date: str = None):
     """SSE endpoint — streams progress events while fetching/parsing emails.
     start_date and end_date are ISO strings like '2025-07-11'
@@ -601,7 +601,7 @@ def fetch_orders_stream(start_date: str = None, end_date: str = None):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@app.get("/api/orders")
+@app.get("/api/orders", dependencies=[Depends(require_admin_api_key)])
 def fetch_orders(start_date: str = None, end_date: str = None):
     """Fetch and parse real supplier emails from Gmail (non-streaming)."""
     global _cached_orders
@@ -1050,9 +1050,9 @@ def renew_gmail_watch():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/config-status")
+@app.get("/api/config-status", dependencies=[Depends(require_admin_api_key)])
 def config_status():
-    """Public endpoint — returns only booleans/status labels, never raw values."""
+    """Admin-only endpoint — returns booleans/status labels about configured services, never raw values."""
     def _has(key: str) -> bool:
         val = os.environ.get(key, "").strip()
         return bool(val) and not val.lower().startswith("placeholder")

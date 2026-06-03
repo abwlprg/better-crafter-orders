@@ -98,7 +98,7 @@ function App() {
         {activePage === 'suppliers'    && <Suppliers    adminKey={adminKey} />}
         {activePage === 'fetch-orders' && <FetchOrders  adminKey={adminKey} />}
         {activePage === 'run-logs'     && <RunLogs      adminKey={adminKey} />}
-        {activePage === 'settings'     && <Settings />}
+        {activePage === 'settings'     && <Settings     adminKey={adminKey} />}
       </main>
     </div>
   )
