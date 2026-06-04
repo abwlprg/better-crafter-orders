@@ -1428,8 +1428,8 @@ def config_status():
         },
         "gemini": {
             "api_key": gemini_key_present,
-            "enabled": False,
-            "reason": "billing_or_quota_not_confirmed",
+            "enabled": gemini_key_present,
+            "reason": "billing_confirmed" if gemini_key_present else "api_key_missing",
         },
     }
 

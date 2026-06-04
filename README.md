@@ -125,7 +125,7 @@ missing or `status: "placeholder"`; they are not treated as configured.
 | Required for local admin app | `GCP_PROJECT`, `ALLOWED_ORIGINS`, `ADMIN_API_KEY` | Yes | `ADMIN_API_KEY` gates protected admin routes. Keep it local/testing only unless a production auth layer replaces it. |
 | Required for Gmail fetch | `GMAIL_ACCOUNT`, `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` | Yes, when fetching Gmail | Used by `/api/orders-stream`, `/api/batch-orders`, Gmail webhook handling, and Gmail watch renewal. |
 | Required for OneDrive sandbox | `MS_CLIENT_ID`, `MS_TENANT_ID`, `MS_REFRESH_TOKEN`, `ONEDRIVE_TEST_DRIVE_ID`, `ONEDRIVE_TEST_FILE_ID`, `ONEDRIVE_SANDBOX_WRITE_ENABLED` | Yes, when creating/testing sandbox docs | Sandbox flows use `ONEDRIVE_TEST_*` IDs and refuse to run if they match production IDs. |
-| Optional Gemini | `GEMINI_API_KEY` | No | Presently reported as paused until billing/quota is confirmed. |
+| Optional Gemini | `GEMINI_API_KEY`, `GEMINI_MODEL` | No | Gemini billing/API access has been confirmed. `GEMINI_MODEL` defaults to `gemini-2.5-flash` when unset. |
 | Production-later | `ONEDRIVE_DRIVE_ID`, `ONEDRIVE_FILE_ID`, `MS_CLIENT_SECRET`, `GOOGLE_CREDENTIALS_JSON` | No | Do not require these for local admin, Gmail fetch, supplier CRUD, or sandbox document creation. |
 | Legacy/reference only | `STORAGE_BUCKET`, `FIRESTORE_COLLECTION`, `SEARCH_HOURS_BACK`, `REPORT_PREFIX`, `TEMPLATE_PATH` | No | Used by the old Firebase/Stephen report path (`functions/main.py`, `WordReportGenerator`, and legacy scripts). They are not required by `api.py`, the React app, supplier CRUD, or sandbox supplier doc creation. |
 

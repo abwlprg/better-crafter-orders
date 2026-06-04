@@ -142,6 +142,21 @@ class TestConfigDiagnosticsApi(unittest.TestCase):
         for marker in env.values():
             self.assertNotIn(marker, serialized)
 
+    def test_config_status_reports_gemini_enabled_when_key_present(self) -> None:
+        env = dict(REQUIRED_ENV, GEMINI_API_KEY="configured-gemini-key")
+        with patch.dict(os.environ, env, clear=True):
+            response = self.client.get(
+                "/api/config-status",
+                headers={"X-Admin-API-Key": env["ADMIN_API_KEY"]},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        gemini = response.json()["gemini"]
+        self.assertTrue(gemini["api_key"])
+        self.assertTrue(gemini["enabled"])
+        self.assertEqual(gemini["reason"], "billing_confirmed")
+        self.assertNotIn(env["GEMINI_API_KEY"], json.dumps(response.json()))
+
 
 if __name__ == "__main__":
     unittest.main()
