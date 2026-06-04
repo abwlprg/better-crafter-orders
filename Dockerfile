@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY api.py .
 COPY functions/ ./functions/
 COPY templates/ ./templates/
+COPY scripts/ ./scripts/
 
 # Frontend built assets from stage 1
 COPY --from=frontend-builder /frontend/dist ./frontend_dist
