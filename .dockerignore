@@ -32,8 +32,6 @@ README.md
 plan.md
 DESIGN.md
 
-# Scripts (dev only)
-scripts/
 tests/
 
 # Firebase
@@ -44,3 +42,14 @@ firebase-debug.log
 
 # Client secret (local only)
 client_secret_*.json
+
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+node_modules/
+frontend/node_modules/
+.git/
+.env
+.env.*
