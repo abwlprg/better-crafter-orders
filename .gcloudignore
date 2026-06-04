@@ -14,3 +14,14 @@ client_secret_*.json
 
 # Include templates/*.docx (needed at runtime in the container)
 # Do NOT add *.docx here
+
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+node_modules/
+frontend/node_modules/
+.git/
+.env
+.env.*
