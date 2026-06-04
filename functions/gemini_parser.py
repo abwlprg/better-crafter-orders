@@ -77,7 +77,7 @@ ATTACHED PDF TEXT:
 class GeminiParser:
     """Parses supplier emails using Google Gemini Flash API."""
 
-    def __init__(self, api_key: str | None = None, model_name: str = "gemini-2.0-flash") -> None:
+    def __init__(self, api_key: str | None = None, model_name: str | None = None) -> None:
         """Initialize with Gemini API key (from param or env)."""
         key = api_key or os.environ.get("GEMINI_API_KEY", "")
         if not key:
@@ -85,8 +85,8 @@ class GeminiParser:
                 "GEMINI_API_KEY is required. Set it in .env or pass it directly."
             )
         self._client = genai.Client(api_key=key)
-        self._model_name = model_name
-        logger.info("GeminiParser initialized with model: %s", model_name)
+        self._model_name = model_name or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        logger.info("GeminiParser initialized with model: %s", self._model_name)
 
     def parse(
         self,

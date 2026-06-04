@@ -8,6 +8,7 @@ import os
 import secrets
 import time
 from datetime import date, datetime, timezone
+from email.utils import getaddresses
 from pathlib import Path
 
 # ── Configure logging ──────────────────
@@ -83,10 +84,13 @@ class SupplierCreateRequest(BaseModel):
     id: str
     name: str
     email: str = ""
+    routing_key: str = ""
     status: str = "active"
     onedrive_file_name: str = ""
     onedrive_file_id: str = ""
     onedrive_drive_id: str = ""
+    active_sheet: str = ""
+    active_year: str = ""
     parser_type: str = "stephen_regex"
     custom_fields: List[dict] = Field(default_factory=list)
     word_schema: Optional[dict] = None
@@ -95,10 +99,13 @@ class SupplierCreateRequest(BaseModel):
 class SupplierUpdateRequest(BaseModel):
     name: str
     email: str = ""
+    routing_key: str = ""
     status: str = "active"
     onedrive_file_name: str = ""
     onedrive_file_id: str = ""
     onedrive_drive_id: str = ""
+    active_sheet: str = ""
+    active_year: str = ""
     parser_type: str = "stephen_regex"
     custom_fields: List[dict] = Field(default_factory=list)
     word_schema: Optional[dict] = None
@@ -107,10 +114,13 @@ class SupplierUpdateRequest(BaseModel):
 class SupplierPatchRequest(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
+    routing_key: Optional[str] = None
     status: Optional[str] = None
     onedrive_file_name: Optional[str] = None
     onedrive_file_id: Optional[str] = None
     onedrive_drive_id: Optional[str] = None
+    active_sheet: Optional[str] = None
+    active_year: Optional[str] = None
     parser_type: Optional[str] = None
     custom_fields: Optional[List[dict]] = None
     word_schema: Optional[dict] = None
@@ -132,12 +142,24 @@ SUPPORTED_BATCH_SUPPLIERS = {
         "supplier_name": "Stephen",
         "supplier_email": STEPHEN_EMAIL,
         "parser_key": "stephen",
+        "parser_type": "stephen_regex",
+        "custom_fields": [],
+        "onedrive_file_name": "",
+        "onedrive_file_id": "",
+        "onedrive_drive_id": "",
+        "active_sheet": "",
     },
     "steven": {
         "supplier_id": "steven",
         "supplier_name": "Stephen",
         "supplier_email": STEPHEN_EMAIL,
         "parser_key": "stephen",
+        "parser_type": "stephen_regex",
+        "custom_fields": [],
+        "onedrive_file_name": "",
+        "onedrive_file_id": "",
+        "onedrive_drive_id": "",
+        "active_sheet": "",
     },
 }
 PREVIEW_ORDER_FIELDS = (
@@ -240,6 +262,168 @@ def _clean_order_row(row: dict) -> dict:
     return {str(key): "" if value is None else str(value).strip() for key, value in row.items()}
 
 
+def _short_message_id(value: str) -> str:
+    value = str(value or "").strip()
+    if len(value) <= 12:
+        return value
+    return f"{value[:8]}...{value[-4:]}"
+
+
+def _normalize_email(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_email_values(values) -> set[str]:
+    raw_values: list[str] = []
+    if isinstance(values, str):
+        raw_values = [values]
+    elif values:
+        raw_values = [str(value) for value in values if value]
+    parsed = {addr.lower() for _name, addr in getaddresses(raw_values) if addr}
+    direct = {_normalize_email(value) for value in raw_values if "@" in value}
+    return {value for value in parsed | direct if value}
+
+
+def email_matches_supplier(message, supplier: dict) -> bool:
+    """Re-check fetched message recipients against the selected supplier route."""
+    routing_key = _normalize_email(supplier.get("supplier_email") or supplier.get("routing_key"))
+    if not routing_key:
+        return False
+    recipients = _message_recipient_emails(message)
+    if not recipients:
+        return True
+    return routing_key in recipients
+
+
+def _message_recipient_emails(message) -> set[str]:
+    recipients: set[str] = set()
+    for attr in ("to", "cc", "delivered_to_headers"):
+        recipients.update(_normalize_email_values(getattr(message, attr, [])))
+    return recipients
+
+
+def matched_supplier_ids_for_message(message, suppliers: list[dict]) -> list[str]:
+    recipients = _message_recipient_emails(message)
+    if not recipients:
+        return []
+    matched: list[str] = []
+    for supplier in suppliers:
+        routing_key = _normalize_email(supplier.get("supplier_email") or supplier.get("routing_key"))
+        if routing_key and routing_key in recipients:
+            matched.append(str(supplier.get("supplier_id") or supplier.get("id")))
+    return matched
+
+
+def validate_unique_routing_keys(suppliers: list[dict]) -> None:
+    seen: dict[str, str] = {}
+    for supplier in suppliers:
+        key = _normalize_email(supplier.get("supplier_email") or supplier.get("routing_key") or supplier.get("email"))
+        if not key:
+            continue
+        if key in seen:
+            raise ValueError(f"Duplicate routing key '{key}' is used by {seen[key]} and {supplier.get('supplier_name') or supplier.get('name')}")
+        seen[key] = str(supplier.get("supplier_name") or supplier.get("name") or supplier.get("supplier_id") or supplier.get("id"))
+
+
+def validate_supplier_target(supplier: dict) -> tuple[bool, str | None]:
+    if not (supplier.get("onedrive_file_name") or supplier.get("onedrive_file_id")):
+        return False, "missing_workbook_target"
+    if not supplier.get("active_sheet"):
+        return False, "missing_active_sheet"
+    return True, None
+
+
+def _required_field_report(row: dict | None = None) -> tuple[list[str], list[str]]:
+    row = row or {}
+    required = ("item_code", "customer_name")
+    found = [field for field in required if str(row.get(field, "")).strip()]
+    missing = [field for field in required if field not in found]
+    return found, missing
+
+
+def _extract_custom_field_value(message, field: dict) -> tuple[str, str | None]:
+    field_name = str(field.get("field_name", "")).strip()
+    if not field_name:
+        return "", None
+    source = str(field.get("source", "body")).strip().lower()
+    hint = str(field.get("hint", "")).strip().rstrip(":") or field_name
+    haystack = ""
+    if source == "subject":
+        haystack = str(getattr(message, "subject", "") or "")
+    elif source == "pdf":
+        haystack = str(getattr(message, "pdf_text", "") or "")
+    elif source in {"body", "manual", "header"}:
+        haystack = str(getattr(message, "body", "") or "")
+    if not haystack:
+        return "", f"Optional custom field '{field_name}' source text is empty"
+    import re as _re
+    match = _re.search(rf"^\s*{_re.escape(hint)}\s*:\s*(.+?)\s*$", haystack, _re.I | _re.M)
+    if not match and hint != field_name:
+        match = _re.search(rf"^\s*{_re.escape(field_name)}\s*:\s*(.+?)\s*$", haystack, _re.I | _re.M)
+    if not match:
+        return "", f"Optional custom field '{field_name}' was not found"
+    return _re.sub(r"\s+", " ", match.group(1)).strip(), None
+
+
+def _apply_custom_fields(order: dict, message, custom_fields: list[dict]) -> list[str]:
+    warnings: list[str] = []
+    for field in custom_fields or []:
+        if not isinstance(field, dict):
+            continue
+        field_name = str(field.get("field_name", "")).strip()
+        if not field_name or order.get(field_name):
+            continue
+        value, warning = _extract_custom_field_value(message, field)
+        order[field_name] = value
+        if warning:
+            warnings.append(warning)
+    return warnings
+
+
+def _normalize_source_value(value: str) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
+def _source_text_for_message(message) -> str:
+    return "\n".join(
+        part
+        for part in (
+            str(getattr(message, "subject", "") or ""),
+            str(getattr(message, "body", "") or ""),
+            str(getattr(message, "pdf_text", "") or ""),
+        )
+        if part.strip()
+    )
+
+
+def _source_fidelity_warnings(order: dict, message) -> list[str]:
+    source = _normalize_source_value(_source_text_for_message(message))
+    if not source:
+        return []
+    warnings: list[str] = []
+    for field, value in order.items():
+        field_name = str(field).strip().lower()
+        if field_name != "item_code" and "order" not in field_name:
+            continue
+        normalized_value = _normalize_source_value(str(value or ""))
+        if normalized_value and normalized_value not in source:
+            warnings.append(f"{field}_not_source_verified")
+    return warnings
+
+
+def _batch_order_dedupe_key(row: dict) -> str:
+    from functions.idempotency import normalize_field
+
+    parts = [
+        normalize_field(str(row.get("supplier_id", ""))),
+        normalize_field(str(row.get("thread_id") or row.get("gmail_thread_id") or "")),
+        normalize_field(str(row.get("item_index", ""))),
+        normalize_field(str(row.get("item_code", ""))),
+        normalize_field(str(row.get("customer_name", ""))),
+    ]
+    return "|".join(parts)
+
+
 def _message_metadata(message, supplier_id: str, supplier_name: str, item_index: int) -> dict:
     """Build source metadata for an order row when available on the Gmail message."""
     metadata = {
@@ -279,7 +463,8 @@ def parse_message_to_order_rows(
     message,
     supplier_id: str = "stephen",
     supplier_name: str = "Stephen",
-) -> tuple[list[dict], int, int]:
+    custom_fields: list[dict] | None = None,
+) -> tuple[list[dict], int, int, list[str], list[str]]:
     """Parse one Gmail message into valid order rows.
 
     Returns (valid_rows, invalid_rows, candidate_rows). Each parser row is
@@ -288,19 +473,82 @@ def parse_message_to_order_rows(
     raw_rows = normalize_parser_result(parser.parse(message.body, pdf_text=message.pdf_text or None))
     valid_rows: list[dict] = []
     invalid_rows = 0
+    warnings: list[str] = []
+    missing_required: set[str] = set()
 
     for item_index, raw_row in enumerate(raw_rows, start=1):
         order = _clean_order_row(raw_row)
         for key, value in _message_metadata(message, supplier_id, supplier_name, item_index).items():
             if value and not order.get(key):
                 order[key] = value
+        warnings.extend(_apply_custom_fields(order, message, custom_fields or []))
+        warnings.extend(_source_fidelity_warnings(order, message))
 
         if _is_valid_order(order):
             valid_rows.append(order)
         else:
             invalid_rows += 1
+            _, missing = _required_field_report(order)
+            missing_required.update(missing)
 
-    return valid_rows, invalid_rows, len(raw_rows)
+    return valid_rows, invalid_rows, len(raw_rows), warnings, sorted(missing_required)
+
+
+def _build_message_diagnostic(
+    *,
+    supplier: dict,
+    message,
+    parser_key: str,
+    valid_rows: list[dict],
+    invalid_rows: int,
+    candidate_rows: int,
+    warnings: list[str] | None = None,
+    missing_required: list[str] | None = None,
+    error: Exception | None = None,
+) -> dict:
+    body = str(getattr(message, "body", "") or "")
+    pdf_text = str(getattr(message, "pdf_text", "") or "")
+    pdf_filenames = list(getattr(message, "pdf_filenames", []) or [])
+    first_row = valid_rows[0] if valid_rows else None
+    found, missing = _required_field_report(first_row)
+    if missing_required:
+        missing = sorted(set(missing) | set(missing_required))
+    status_value = "parsed" if valid_rows else "error" if error else "skipped"
+    skip_reason = ""
+    if error:
+        skip_reason = str(error)[:200]
+    elif "ambiguous_multiple_supplier_routing_keys" in (warnings or []):
+        skip_reason = "ambiguous_multiple_supplier_routing_keys"
+    elif "email_does_not_match_selected_supplier_routing_key" in (warnings or []):
+        skip_reason = "email_does_not_match_selected_supplier_routing_key"
+    elif pdf_filenames and not pdf_text:
+        skip_reason = "attachment_may_require_ocr_or_gemini_vision"
+    elif not body and not pdf_text:
+        skip_reason = "Email body and PDF text were empty"
+    elif candidate_rows == 0:
+        skip_reason = "Parser returned zero candidate rows"
+    elif invalid_rows:
+        skip_reason = f"Parser returned {invalid_rows} row(s) missing required fields"
+
+    return {
+        "supplier_id": supplier["supplier_id"],
+        "supplier_name": supplier["supplier_name"],
+        "message_id_short": _short_message_id(getattr(message, "message_id", "")),
+        "subject": str(getattr(message, "subject", "") or "")[:160],
+        "body_text_extracted": bool(body),
+        "body_text_length": len(body),
+        "html_converted_to_text": bool(getattr(message, "html_converted_to_text", False)),
+        "attachment_count": int(getattr(message, "attachment_count", len(pdf_filenames))),
+        "pdf_count": int(getattr(message, "pdf_count", len(pdf_filenames))),
+        "pdf_text_extracted": bool(pdf_text),
+        "pdf_text_length": len(pdf_text),
+        "parser_used": parser_key,
+        "required_fields_found": found,
+        "required_fields_missing": missing,
+        "final_status": status_value,
+        "safe_skip_reason": skip_reason,
+        "warnings": list(dict.fromkeys(warnings or [])),
+    }
 
 
 def _sanitize_preview_order(row: dict) -> dict:
@@ -340,23 +588,24 @@ def batch_orders(body: BatchOrdersRequest):
             detail="dry_run=false is not supported for /api/batch-orders",
         )
 
-    unsupported = [
-        supplier_id
-        for supplier_id in body.supplier_ids
-        if supplier_id not in SUPPORTED_BATCH_SUPPLIERS
-    ]
-    # Build a merged supplier map: hardcoded fallback + configured suppliers
+    # Build a merged supplier map: configured suppliers + hardcoded fallback.
     _config_suppliers = {
         s["id"]: {
             "supplier_id": s["id"],
             "supplier_name": s["name"],
-            "supplier_email": s.get("email", ""),
-            "parser_key": "stephen" if s.get("parser_type") in ("stephen_regex", None) else "stephen",
+            "supplier_email": s.get("routing_key") or s.get("email", ""),
+            "parser_key": s.get("parser_type") or "generic_regex",
+            "parser_type": s.get("parser_type") or "generic_regex",
+            "custom_fields": s.get("custom_fields", []),
+            "onedrive_file_name": s.get("onedrive_file_name", ""),
+            "onedrive_file_id": s.get("onedrive_file_id", ""),
+            "onedrive_drive_id": s.get("onedrive_drive_id", ""),
+            "active_sheet": s.get("active_sheet") or s.get("active_year", ""),
         }
-        for s in _supplier_config.get_all()
-        if s.get("email", "").strip()
+        for s in _supplier_config.get_active()
+        if (s.get("routing_key") or s.get("email", "")).strip()
     }
-    _all_suppliers = {**_config_suppliers, **SUPPORTED_BATCH_SUPPLIERS}
+    _all_suppliers = {**SUPPORTED_BATCH_SUPPLIERS, **_config_suppliers}
 
     unsupported = [sid for sid in body.supplier_ids if sid not in _all_suppliers]
     if unsupported:
@@ -368,6 +617,11 @@ def batch_orders(body: BatchOrdersRequest):
                 "supported_supplier_ids": sorted(_all_suppliers),
             },
         )
+    selected_suppliers = [_all_suppliers[sid] for sid in body.supplier_ids]
+    try:
+        validate_unique_routing_keys(selected_suppliers)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
     preview_limit = min(body.max_preview_rows, MAX_BATCH_PREVIEW_ROWS)
     gmail = _get_gmail_client()
@@ -385,10 +639,15 @@ def batch_orders(body: BatchOrdersRequest):
     for supplier_id in body.supplier_ids:
         supplier = _all_suppliers[supplier_id]
         supplier_errors: list[str] = []
+        diagnostics: list[dict] = []
         orders: list[dict] = []
         invalid_rows_total = 0
         orders_parsed = 0
         emails_found = 0
+        emails_skipped = 0
+        duplicates_skipped = 0
+        seen_keys: set[str] = set()
+        target_valid, target_reason = validate_supplier_target(supplier)
 
         try:
             messages = gmail.list_supplier_messages(
@@ -397,25 +656,84 @@ def batch_orders(body: BatchOrdersRequest):
                 end_date=body.end_date,
             )
             emails_found = len(messages)
-            parser = get_parser(supplier["parser_key"])
+            parser = get_parser(
+                supplier["supplier_id"],
+                parser_type=supplier.get("parser_type") or supplier["parser_key"],
+                custom_fields=supplier.get("custom_fields", []),
+            )
 
             for message in messages:
-                valid_rows, invalid_rows, candidate_rows = parse_message_to_order_rows(
+                matched_supplier_ids = matched_supplier_ids_for_message(message, selected_suppliers)
+                if len(matched_supplier_ids) > 1:
+                    emails_skipped += 1
+                    diagnostics.append(
+                        _build_message_diagnostic(
+                            supplier=supplier,
+                            message=message,
+                            parser_key=supplier.get("parser_type") or supplier["parser_key"],
+                            valid_rows=[],
+                            invalid_rows=0,
+                            candidate_rows=0,
+                            warnings=["ambiguous_multiple_supplier_routing_keys"],
+                        )
+                    )
+                    continue
+                if not email_matches_supplier(message, supplier):
+                    emails_skipped += 1
+                    diagnostics.append(
+                        _build_message_diagnostic(
+                            supplier=supplier,
+                            message=message,
+                            parser_key=supplier.get("parser_type") or supplier["parser_key"],
+                            valid_rows=[],
+                            invalid_rows=0,
+                            candidate_rows=0,
+                            warnings=["email_does_not_match_selected_supplier_routing_key"],
+                        )
+                    )
+                    continue
+                valid_rows, invalid_rows, candidate_rows, warnings, missing_required = parse_message_to_order_rows(
                     parser,
                     message,
                     supplier_id=supplier["supplier_id"],
                     supplier_name=supplier["supplier_name"],
+                    custom_fields=supplier.get("custom_fields", []),
                 )
+                kept_rows: list[dict] = []
+                for row in valid_rows:
+                    key = _batch_order_dedupe_key(row)
+                    if not key.strip("|"):
+                        kept_rows.append(row)
+                        continue
+                    if key in seen_keys:
+                        duplicates_skipped += 1
+                    else:
+                        seen_keys.add(key)
+                        kept_rows.append(row)
                 invalid_rows_total += invalid_rows
-                orders_parsed += len(valid_rows)
+                orders_parsed += len(kept_rows)
                 if candidate_rows == 0:
                     supplier_errors.append(
-                        f"No parser rows for message {getattr(message, 'message_id', '')}"
+                        f"No parser rows for message {_short_message_id(getattr(message, 'message_id', ''))}"
                     )
+                if not kept_rows:
+                    emails_skipped += 1
+                diagnostics.append(
+                    _build_message_diagnostic(
+                        supplier=supplier,
+                        message=message,
+                        parser_key=supplier.get("parser_type") or supplier["parser_key"],
+                        valid_rows=kept_rows,
+                        invalid_rows=invalid_rows,
+                        candidate_rows=candidate_rows,
+                        warnings=warnings,
+                        missing_required=missing_required,
+                    )
+                )
                 if body.include_orders and len(orders) < preview_limit:
                     remaining = preview_limit - len(orders)
                     orders.extend(
-                        _sanitize_preview_order(row) for row in valid_rows[:remaining]
+                        _sanitize_preview_order(row) for row in kept_rows[:remaining]
                     )
         except Exception as exc:
             logger.error(
@@ -430,13 +748,22 @@ def batch_orders(body: BatchOrdersRequest):
         summary = {
             "supplier_id": supplier["supplier_id"],
             "supplier_name": supplier["supplier_name"],
+            "routing_key": supplier["supplier_email"],
+            "onedrive_file_name": supplier.get("onedrive_file_name", ""),
+            "active_sheet": supplier.get("active_sheet", ""),
+            "target_valid": target_valid,
+            "target_reason": target_reason,
             "emails_found": emails_found,
             "orders_parsed": orders_parsed,
+            "emails_skipped": emails_skipped,
             "invalid_rows": invalid_rows_total,
-            "duplicates": None,
+            "duplicates": duplicates_skipped,
+            "duplicates_skipped": duplicates_skipped,
             "would_append": would_append,
             "appended": 0,
+            "rows_written": 0,
             "errors": supplier_errors,
+            "diagnostics": diagnostics,
             "orders": orders if body.include_orders else [],
         }
         suppliers.append(summary)
@@ -539,7 +866,7 @@ def fetch_orders_stream(start_date: str = None, end_date: str = None):
                         idx, total, msg.message_id[:10], len(msg.body),
                         len(msg.pdf_text or ""), msg.pdf_filenames or [])
 
-            valid_rows, invalid_rows, candidate_rows = parse_message_to_order_rows(parser, msg)
+            valid_rows, invalid_rows, candidate_rows, _, _ = parse_message_to_order_rows(parser, msg)
             invalid_rows_total += invalid_rows
             failed += invalid_rows
             if valid_rows:
@@ -633,7 +960,7 @@ def fetch_orders(start_date: str = None, end_date: str = None):
             has_pdf = bool(msg.pdf_text)
             if has_pdf:
                 pdf_count += 1
-            valid_rows, invalid_rows, candidate_rows = parse_message_to_order_rows(parser, msg)
+            valid_rows, invalid_rows, candidate_rows, _, _ = parse_message_to_order_rows(parser, msg)
             invalid_rows_total += invalid_rows
             failed += invalid_rows
             if valid_rows:
@@ -815,7 +1142,7 @@ async def gmail_webhook(request: Request):
         for msg in messages:
             logger.info("  🔍 Parsing msg_id=%s (body=%d chars, pdf=%d chars)",
                         msg.message_id[:12], len(msg.body), len(msg.pdf_text or ""))
-            valid_rows, invalid_rows, candidate_rows = parse_message_to_order_rows(parser, msg)
+            valid_rows, invalid_rows, candidate_rows, _, _ = parse_message_to_order_rows(parser, msg)
             invalid_rows_total += invalid_rows
             if not valid_rows:
                 if candidate_rows == 0:
@@ -955,7 +1282,7 @@ def daily_update(days: int = Query(default=2, ge=1, le=30, description="Cuántos
         invalid_rows_total = 0
         empty_parser_results = 0
         for msg in messages:
-            valid_rows, invalid_rows, candidate_rows = parse_message_to_order_rows(parser, msg)
+            valid_rows, invalid_rows, candidate_rows, _, _ = parse_message_to_order_rows(parser, msg)
             invalid_rows_total += invalid_rows
             if valid_rows:
                 orders.extend(valid_rows)

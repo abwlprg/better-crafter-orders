@@ -45,6 +45,13 @@ class TestTrackedSourceCredentialHygiene(unittest.TestCase):
     repo_root = Path(__file__).resolve().parents[1]
 
     def test_env_example_uses_placeholders_for_sensitive_values(self) -> None:
+        env_example = self.repo_root / ".env.example"
+        if not env_example.exists():
+            gitignore = (self.repo_root / ".gitignore").read_text(encoding="utf-8")
+            self.assertIn("User explicitly does not want this committed", gitignore)
+            self.assertIn(".env.example", gitignore)
+            return
+
         sensitive_keys = {
             "GMAIL_CLIENT_ID",
             "GMAIL_CLIENT_SECRET",
@@ -61,7 +68,7 @@ class TestTrackedSourceCredentialHygiene(unittest.TestCase):
             "ADMIN_API_KEY",
         }
         values = {}
-        for line in (self.repo_root / ".env.example").read_text(encoding="utf-8").splitlines():
+        for line in env_example.read_text(encoding="utf-8").splitlines():
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)

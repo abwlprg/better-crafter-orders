@@ -123,8 +123,90 @@ class StephenParser(SupplierParser):
         return normalized
 
 
+class GenericFieldParser(SupplierParser):
+    """Simple label-based parser for supplier formats configured outside Stephen."""
+
+    FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+        "order_date": ("order date", "date"),
+        "item_code": ("item code", "item no", "item #", "item number", "item", "product", "sku"),
+        "item_name": ("item name", "description", "product"),
+        "quantity": ("quantity", "qty", "number of units", "units", "qty ordered"),
+        "color": ("color",),
+        "ship_by": ("ship by", "ship date", "needed by"),
+        "customer_name": ("customer", "customer name", "customer info", "ship to", "name"),
+        "brand": ("brand",),
+    }
+
+    def __init__(self, custom_fields: list[dict] | None = None) -> None:
+        self._custom_fields = custom_fields or []
+
+    def parse(self, email_body: str, pdf_text: str | None = None) -> list[dict[str, str]] | None:
+        text = "\n".join(part for part in (email_body or "", pdf_text or "") if part.strip())
+        if not text or ":" not in text:
+            return None
+
+        common: dict[str, str] = {}
+        for field, aliases in self.FIELD_ALIASES.items():
+            if field not in {"item_code", "item_name", "quantity"}:
+                common[field] = self._find_label(text, aliases)
+
+        item_values = self._find_all_labels(text, self.FIELD_ALIASES["item_code"])
+        item_names = self._find_all_labels(text, self.FIELD_ALIASES["item_name"])
+        quantities = self._find_all_labels(text, self.FIELD_ALIASES["quantity"])
+        row_count = max(len(item_values), len(item_names), len(quantities), 1)
+        rows: list[dict[str, str]] = []
+        for index in range(row_count):
+            row = dict(common)
+            row["item_code"] = item_values[index] if index < len(item_values) else ""
+            row["item_name"] = item_names[index] if index < len(item_names) else ""
+            row["quantity"] = quantities[index] if index < len(quantities) else ""
+            rows.append(row)
+
+        for row in rows:
+            for field in self.FIELD_ALIASES:
+                row.setdefault(field, "")
+        for custom in self._custom_fields:
+            field_name = str(custom.get("field_name", "")).strip()
+            if not field_name:
+                continue
+            hint = str(custom.get("hint", "")).strip().rstrip(":")
+            aliases = [hint] if hint else []
+            aliases.append(field_name)
+            value = self._find_label(text, tuple(aliases))
+            for row in rows:
+                row[field_name] = value
+
+        if not any(row.get("item_code") or row.get("customer_name") for row in rows):
+            return None
+        return rows
+
+    @staticmethod
+    def _find_label(text: str, labels: tuple[str, ...]) -> str:
+        values = GenericFieldParser._find_all_labels(text, labels)
+        return values[0] if values else ""
+
+    @staticmethod
+    def _find_all_labels(text: str, labels: tuple[str, ...]) -> list[str]:
+        values: list[str] = []
+        for label in labels:
+            if not label:
+                continue
+            pattern = re.compile(
+                rf"^\s*{re.escape(label)}\s*#?\s*:\s*(.+?)\s*$",
+                re.I | re.M,
+            )
+            for match in pattern.finditer(text):
+                value = re.sub(r"\s+", " ", match.group(1)).strip()
+                if value:
+                    values.append(value)
+            if values:
+                return values
+        return []
+
+
 PARSER_REGISTRY: dict[str, SupplierParser] = {
     "stephen": StephenParser(),
+    "generic": GenericFieldParser(),
 }
 
 
@@ -154,7 +236,10 @@ class SmartParser(SupplierParser):
             return False
 
         try:
-            from gemini_parser import GeminiParser
+            try:
+                from .gemini_parser import GeminiParser
+            except ImportError:
+                from gemini_parser import GeminiParser
             self._gemini = GeminiParser(api_key=api_key)
             logger.info("SmartParser: Gemini parser initialized successfully")
             return True
@@ -182,12 +267,23 @@ class SmartParser(SupplierParser):
         return self._regex_fallback.parse(email_body, pdf_text=pdf_text)
 
 
-def get_parser(supplier: str = "stephen") -> SupplierParser:
+def get_parser(
+    supplier: str = "stephen",
+    parser_type: str | None = None,
+    custom_fields: list[dict] | None = None,
+) -> SupplierParser:
     """Get the best available parser for a supplier.
 
     Returns SmartParser (Gemini + fallback) if GEMINI_API_KEY is set,
     otherwise returns the regex-only parser.
     """
-    if os.environ.get("GEMINI_API_KEY"):
+    selected = (parser_type or supplier or "stephen").strip().lower()
+    if selected in {"stephen", "stephen_regex"}:
+        return StephenParser()
+    if selected == "generic_regex":
+        return GenericFieldParser(custom_fields=custom_fields)
+    if selected in {"smart", "gemini_fallback"} and os.environ.get("GEMINI_API_KEY"):
         return SmartParser()
-    return PARSER_REGISTRY.get(supplier, StephenParser())
+    if selected in {"smart", "gemini_fallback"}:
+        return GenericFieldParser(custom_fields=custom_fields)
+    return PARSER_REGISTRY.get(supplier, GenericFieldParser(custom_fields=custom_fields))

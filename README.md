@@ -396,6 +396,111 @@ Manual fetch does **not** call `/api/append-to-onedrive`, `/api/daily-update`, o
 `/api/clear-onedrive-rows`. It calls only `POST /api/batch-orders` with
 `dry_run: true`.
 
+### Supplier routing and workbook targets
+
+Each active supplier must be processed as its own route:
+
+`Supplier -> To Email / Routing Key -> OneDrive Workbook -> Active Worksheet`
+
+Configured suppliers use `routing_key` when present, otherwise `email`. Manual
+fetch and all-supplier fetch run a separate Gmail search for each supplier using
+`deliveredto:<configured inbox>` plus `to:<supplier routing key>`. Selecting one
+supplier must never fetch or process the other suppliers. All-supplier mode
+processes active suppliers sequentially and returns separate per-supplier
+summaries.
+
+Supplier config now supports future Excel targets with:
+
+- `onedrive_file_name`, `onedrive_file_id`, `onedrive_drive_id`
+- `active_sheet` / `active_year`
+- `custom_fields[]` as future Excel columns and extraction rules
+
+Changing workbook or sheet config affects future writes only. Existing files,
+sheets, rows, and columns must not be deleted, moved, merged, copied, or
+overwritten automatically.
+
+The default workbook model is one workbook per supplier and one sheet per year,
+for example `Jake Test.xlsx` with sheets `2025`, `2026`, and `2027`. The Excel
+helper can create a new yearly sheet by copying headers only from an existing
+sheet; it does not copy old order rows and does not overwrite an existing sheet.
+
+Adding a custom field safely adds its column to the supplier active sheet if it
+is missing. Existing rows and columns are preserved. Future parsed emails use the
+custom field `field_name`, `type`, `source`, and `hint`; missing optional values
+stay blank and produce safe warnings.
+
+Current live OneDrive code still contains legacy Word `.docx` helpers for older
+paths. The Excel workbook helpers are local-byte safe helpers and do not call
+OneDrive by themselves.
+
+### Parser strategy and diagnostics
+
+Stephen parsing remains supported by `stephen_regex`. Other suppliers can use
+`generic_regex` for label-style fields or `smart` / `gemini_fallback` when a
+format is unknown or messy. Gemini defaults to `gemini-2.5-flash` and can be
+overridden with `GEMINI_MODEL`. Gemini is limited to field extraction only: it
+must not choose the supplier, routing key, workbook, worksheet, or destination.
+API code validates parser output before rows are counted for writing.
+
+For every fetched email, batch preview returns safe diagnostics:
+
+- supplier id and name
+- shortened message id and subject
+- body extracted yes/no and body length
+- HTML converted to text yes/no
+- attachment/PDF counts
+- PDF text extracted yes/no and PDF text length
+- parser used
+- required fields found/missing
+- final status: `parsed`, `skipped`, `duplicate`, or `error`
+- safe skip reason
+
+Diagnostics never include secrets, tokens, raw credentials, full email bodies,
+raw PDF text, or full customer-sensitive payloads. If a PDF/image attachment has
+no selectable text, diagnostics report that OCR/Gemini vision may be required.
+
+### Date handling and dedupe
+
+Same-day UI selections include the full day. For example, selecting June 2, 2026
+builds a Gmail query equivalent to:
+
+```text
+after:2026/06/01 before:2026/06/03
+```
+
+Re-running a fetch must not duplicate rows. The active dry-run response reports
+duplicates skipped within the supplier result. Production writes should mark rows
+processed only after a successful Excel write; failed writes must not mark rows
+as processed.
+
+### Automatic 2:00 AM run
+
+The intended automatic run uses the same supplier routing rules as manual fetch:
+process active suppliers independently, run one Gmail search per supplier, keep
+rows separated by supplier, and write only to the configured workbook and active
+sheet for that supplier. If Cloud Scheduler is enabled, the scheduler endpoint
+must use production auth and must be verified after deployment.
+
+### Production pressure cases
+
+Before demo or production signoff, pressure-test these real-world cases with
+fake/demo/test data first:
+
+- Multiple supplier routing keys in one email: all-supplier mode should skip the
+  message with `ambiguous_multiple_supplier_routing_keys` unless explicit split
+  behavior is later designed.
+- Forwarded/replied Gmail thread duplicates: repeated appearances of the same
+  supplier/thread/item/customer should be deduped before append.
+- Gemini source fidelity: Gemini may extract fields only. Item codes and
+  order-number-like values that cannot be traced to the source text should carry
+  warnings such as `item_code_not_source_verified`.
+- Custom fields after existing rows: matching is normalized by trimming,
+  lowercasing, and collapsing whitespace; existing rows/columns must stay in
+  place and old rows remain blank until an explicit backfill exists.
+- Image-only/scanned PDFs: if no body/PDF text can be read, diagnostics should
+  include `attachment_may_require_ocr_or_gemini_vision` and no blank/partial row
+  should be written.
+
 ## 2:00 AM Scheduled Run — Audit Result
 
 ### Legacy Firebase scheduled function (reference path)

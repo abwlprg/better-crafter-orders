@@ -56,7 +56,7 @@ class TestParserContract(unittest.TestCase):
             {"customer_name": "No Item", "item_code": ""},
         ])
 
-        rows, invalid_rows, candidate_rows = api.parse_message_to_order_rows(parser, _message())
+        rows, invalid_rows, candidate_rows, _, _ = api.parse_message_to_order_rows(parser, _message())
 
         self.assertEqual(candidate_rows, 2)
         self.assertEqual(invalid_rows, 1)
@@ -70,7 +70,7 @@ class TestParserContract(unittest.TestCase):
             {"customer_name": "Valid Customer", "item_code": "404"},
         ])
 
-        rows, invalid_rows, candidate_rows = api.parse_message_to_order_rows(parser, _message())
+        rows, invalid_rows, candidate_rows, _, _ = api.parse_message_to_order_rows(parser, _message())
 
         self.assertEqual(candidate_rows, 2)
         self.assertEqual(invalid_rows, 1)
@@ -79,7 +79,7 @@ class TestParserContract(unittest.TestCase):
     def test_legacy_dict_parse_path_is_supported(self) -> None:
         parser = FakeParser({"customer_name": "Legacy Customer", "item_code": "505"})
 
-        rows, invalid_rows, candidate_rows = api.parse_message_to_order_rows(parser, _message())
+        rows, invalid_rows, candidate_rows, _, _ = api.parse_message_to_order_rows(parser, _message())
 
         self.assertEqual(candidate_rows, 1)
         self.assertEqual(invalid_rows, 0)
@@ -92,7 +92,7 @@ class TestParserContract(unittest.TestCase):
             {"customer_name": "Bob", "item_code": "202"},
         ])
 
-        rows, _, _ = api.parse_message_to_order_rows(parser, _message())
+        rows, _, _, _, _ = api.parse_message_to_order_rows(parser, _message())
 
         self.assertEqual(rows[0]["message_id"], "msg-123")
         self.assertEqual(rows[0]["thread_id"], "thread-456")

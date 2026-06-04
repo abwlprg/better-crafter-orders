@@ -11,11 +11,10 @@ function StatusBadge({ value }) {
 export default function Settings({ adminKey }) {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (!adminKey) {
-      setLoading(false)
       return
     }
     fetch(`${API_URL}/config-status`, {

@@ -10,7 +10,7 @@ _DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "suppliers.json"
 _LOCK = threading.Lock()
 
 VALID_STATUSES = {"active", "inactive"}
-VALID_PARSER_TYPES = {"stephen_regex", "smart"}
+VALID_PARSER_TYPES = {"stephen_regex", "generic_regex", "smart", "gemini_fallback"}
 VALID_FIELD_TYPES = {"text", "number", "date", "boolean"}
 VALID_FIELD_SOURCES = {"body", "subject", "pdf", "header", "manual"}
 
@@ -54,10 +54,13 @@ def _normalize(data: dict) -> dict:
         "id": str(data.get("id", "")).strip().lower(),
         "name": str(data.get("name", "")).strip(),
         "email": str(data.get("email", "")).strip(),
+        "routing_key": str(data.get("routing_key") or data.get("to_email") or data.get("email", "")).strip(),
         "status": data.get("status", "active"),
         "onedrive_file_name": str(data.get("onedrive_file_name", "")).strip(),
         "onedrive_file_id": str(data.get("onedrive_file_id", "")).strip(),
         "onedrive_drive_id": str(data.get("onedrive_drive_id", "")).strip(),
+        "active_sheet": str(data.get("active_sheet") or data.get("active_year") or "").strip(),
+        "active_year": str(data.get("active_year") or data.get("active_sheet") or "").strip(),
         "parser_type": data.get("parser_type", "stephen_regex"),
         "custom_fields": [
             _normalize_custom_field(cf) for cf in raw_fields if isinstance(cf, dict)
@@ -95,6 +98,25 @@ def _validate(supplier: dict) -> None:
             )
 
 
+def _routing_key(supplier: dict) -> str:
+    return str(supplier.get("routing_key") or supplier.get("email") or "").strip().lower()
+
+
+def _validate_unique_active_routing_keys(suppliers: list[dict]) -> None:
+    seen: dict[str, str] = {}
+    for supplier in suppliers:
+        if supplier.get("status") != "active":
+            continue
+        key = _routing_key(supplier)
+        if not key:
+            continue
+        if key in seen:
+            raise ValueError(
+                f"Duplicate routing key '{key}' is used by {seen[key]} and {supplier.get('name')}"
+            )
+        seen[key] = supplier.get("name", supplier.get("id", "unknown"))
+
+
 def get_all() -> list[dict]:
     with _LOCK:
         return list(_load())
@@ -119,6 +141,7 @@ def create(data: dict) -> dict:
         suppliers = _load()
         if any(s.get("id") == supplier["id"] for s in suppliers):
             raise ValueError(f"Supplier '{supplier['id']}' already exists")
+        _validate_unique_active_routing_keys(suppliers + [supplier])
         suppliers.append(supplier)
         _save(suppliers)
     return dict(supplier)
@@ -147,6 +170,9 @@ def update(supplier_id: str, data: dict) -> dict:
                 merged[key] = existing.get(key) or ""
         supplier = _normalize(merged)
         _validate(supplier)
+        candidate = list(suppliers)
+        candidate[idx] = supplier
+        _validate_unique_active_routing_keys(candidate)
         suppliers[idx] = supplier
         _save(suppliers)
     return dict(supplier)
@@ -181,6 +207,9 @@ def patch(supplier_id: str, updates: dict) -> dict:
                 merged[key] = value
         supplier = _normalize(merged)
         _validate(supplier)
+        candidate = list(suppliers)
+        candidate[idx] = supplier
+        _validate_unique_active_routing_keys(candidate)
         suppliers[idx] = supplier
         _save(suppliers)
     return dict(supplier)

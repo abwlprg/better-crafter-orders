@@ -3,11 +3,14 @@
     "id": "example-supplier",
     "name": "Example Supplier",
     "email": "supplier@example.com",
+    "routing_key": "supplier@example.com",
     "status": "active",
-    "onedrive_file_name": "Example Supplier 2026",
+    "onedrive_file_name": "Example Supplier Test.xlsx",
     "onedrive_file_id": "",
     "onedrive_drive_id": "",
-    "parser_type": "stephen_regex",
+    "active_sheet": "2026",
+    "active_year": "2026",
+    "parser_type": "generic_regex",
     "custom_fields": [
       {
         "field_name": "Brand",

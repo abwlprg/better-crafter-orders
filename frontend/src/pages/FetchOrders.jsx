@@ -46,10 +46,42 @@ function SummaryTiles({ supplier }) {
     <div className="summary-grid">
       <div className="summary-tile"><span>{supplier.emails_found ?? 0}</span><p>Emails Found</p></div>
       <div className="summary-tile"><span>{supplier.orders_parsed ?? 0}</span><p>Orders Parsed</p></div>
-      <div className="summary-tile"><span>{supplier.invalid_rows ?? 0}</span><p>Invalid Rows</p></div>
-      <div className="summary-tile"><span>{supplier.would_append ?? 0}</span><p>Would Append</p></div>
-      <div className="summary-tile"><span>{supplier.appended ?? 0}</span><p>Appended</p></div>
-      <div className="summary-tile"><span>{(supplier.errors || []).length}</span><p>Errors</p></div>
+      <div className="summary-tile"><span>{supplier.emails_skipped ?? 0}</span><p>Emails Skipped</p></div>
+      <div className="summary-tile"><span>{supplier.duplicates_skipped ?? supplier.duplicates ?? 0}</span><p>Duplicates Skipped</p></div>
+      <div className="summary-tile"><span>{supplier.rows_written ?? supplier.appended ?? 0}</span><p>Rows Written</p></div>
+      <div className="summary-tile"><span>{supplier.would_append ?? 0}</span><p>Would Write</p></div>
+    </div>
+  )
+}
+
+function Diagnostics({ diagnostics = [] }) {
+  const skipped = diagnostics.filter((d) => d.final_status !== 'parsed')
+  if (!skipped.length) return null
+  return (
+    <div className="diagnostics-list">
+      {skipped.map((d, i) => (
+        <details key={`${d.message_id_short || 'msg'}-${i}`} className="diagnostic-item">
+          <summary>
+            <span>{d.subject || 'No subject'}</span>
+            <strong>{d.safe_skip_reason || d.final_status}</strong>
+          </summary>
+          <dl>
+            <div><dt>Message</dt><dd>{d.message_id_short || '-'}</dd></div>
+            <div><dt>Parser</dt><dd>{d.parser_used || '-'}</dd></div>
+            <div><dt>Body</dt><dd>{d.body_text_extracted ? `yes (${d.body_text_length})` : 'no'}</dd></div>
+            <div><dt>HTML converted</dt><dd>{d.html_converted_to_text ? 'yes' : 'no'}</dd></div>
+            <div><dt>Attachments</dt><dd>{d.attachment_count ?? 0}</dd></div>
+            <div><dt>PDFs</dt><dd>{d.pdf_count ?? 0}</dd></div>
+            <div><dt>PDF text</dt><dd>{d.pdf_text_extracted ? `yes (${d.pdf_text_length})` : 'no'}</dd></div>
+            <div><dt>Missing</dt><dd>{(d.required_fields_missing || []).join(', ') || '-'}</dd></div>
+          </dl>
+          {(d.warnings || []).length > 0 && (
+            <ul>
+              {d.warnings.map((w, wi) => <li key={wi}>{w}</li>)}
+            </ul>
+          )}
+        </details>
+      ))}
     </div>
   )
 }
@@ -278,6 +310,7 @@ export default function FetchOrders({ adminKey }) {
             </div>
 
             <SummaryTiles supplier={supplier} />
+            <Diagnostics diagnostics={supplier.diagnostics || []} />
 
             {(supplier.errors || []).length > 0 && (
               <div className="error-list">
@@ -286,7 +319,7 @@ export default function FetchOrders({ adminKey }) {
             )}
 
             {includeOrders && safeRows.length > 0 && (
-              <div className="table-wrap" style={{ marginTop: 10 }}>
+              <div className="table-wrap fetch-results-scroll" style={{ marginTop: 10 }}>
                 <table className="data-table">
                   <thead>
                     <tr>

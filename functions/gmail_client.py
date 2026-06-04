@@ -37,6 +37,13 @@ class GmailMessage:
     body: str
     pdf_text: str = ""
     pdf_filenames: list[str] = field(default_factory=list)
+    subject: str = ""
+    to: list[str] = field(default_factory=list)
+    cc: list[str] = field(default_factory=list)
+    delivered_to_headers: list[str] = field(default_factory=list)
+    html_converted_to_text: bool = False
+    attachment_count: int = 0
+    pdf_count: int = 0
     # BUG 4: Gmail API internalDate (Unix ms). Used as the canonical "email sent date"
     # for the Word file, instead of whatever date the customer wrote inside the body.
     internal_date_ms: int = 0
@@ -161,28 +168,27 @@ class GmailClient:
                 first_internal_date_ms = 0
 
             # Log headers of FIRST message
-            headers = {
-                h["name"].lower(): h["value"]
-                for h in first_msg_payload.get("payload", {}).get("headers", [])
-            }
-            logger.info("       📅 Date:    %s", headers.get("date", "?"))
-            logger.info("       📝 Subject: %s", headers.get("subject", "?"))
-            logger.info("       👤 From:    %s", headers.get("from", "?"))
-            logger.info("       📨 To:      %s", headers.get("to", "?"))
+            headers = self._header_values(first_msg_payload.get("payload", {}).get("headers", []))
+            logger.info("       📅 Date:    %s", self._first_header(headers, "date", "?"))
+            logger.info("       📝 Subject: %s", self._first_header(headers, "subject", "?"))
+            logger.info("       👤 From:    %s", self._first_header(headers, "from", "?"))
+            logger.info("       📨 To:      %s", self._first_header(headers, "to", "?"))
             if headers.get("cc"):
-                logger.info("       📋 Cc:      %s", headers["cc"])
+                logger.info("       📋 Cc:      %s", self._first_header(headers, "cc", ""))
             logger.info("       📨 Thread msgs total: %d", len(thread_msgs))
 
             # Body always from the FIRST (original order) message
-            decoded_body = self._extract_preferred_body(first_msg_payload.get("payload", {}))
+            decoded_body, html_converted = self._extract_preferred_body(first_msg_payload.get("payload", {}))
             logger.info("       body=%d chars (from msg #1 of thread)", len(decoded_body))
 
             # PDFs collected from ALL messages in the thread
             all_pdf_texts:     list[str] = []
             all_pdf_filenames: list[str] = []
+            attachment_count = 0
 
             for msg_idx, msg_payload in enumerate(thread_msgs):
                 msg_id  = msg_payload.get("id", "")
+                attachment_count += self._count_attachments(msg_payload.get("payload", {}))
                 pdf_text, pdf_filenames = self._extract_pdf_attachments(msg_payload, msg_id)
                 if pdf_text:
                     all_pdf_texts.append(pdf_text)
@@ -202,6 +208,17 @@ class GmailClient:
                     body=decoded_body,
                     pdf_text=combined_pdf_text,
                     pdf_filenames=all_pdf_filenames,
+                    subject=self._first_header(headers, "subject", ""),
+                    to=headers.get("to", []),
+                    cc=headers.get("cc", []),
+                    delivered_to_headers=(
+                        headers.get("delivered-to", [])
+                        + headers.get("x-original-to", [])
+                        + headers.get("envelope-to", [])
+                    ),
+                    html_converted_to_text=html_converted,
+                    attachment_count=attachment_count,
+                    pdf_count=len(all_pdf_filenames),
                     internal_date_ms=first_internal_date_ms,
                 )
             )
@@ -229,8 +246,8 @@ class GmailClient:
         if start_date or end_date:
             date_part = ""
             if start_date:
-                # Gmail after: is exclusive, so use same date (it includes that day)
-                date_part += f"after:{start_date.replace('-', '/')} "
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=1)
+                date_part += f"after:{start_dt.strftime('%Y/%m/%d')} "
             if end_date:
                 # Gmail before: is exclusive, add 1 day to include end_date itself
                 end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
@@ -280,17 +297,26 @@ class GmailClient:
                 time.sleep(delay_seconds)
                 delay_seconds *= 2
 
-    def _extract_preferred_body(self, payload: dict[str, Any]) -> str:
+    def _extract_preferred_body(self, payload: dict[str, Any]) -> tuple[str, bool]:
         """Prefer plain text body, then HTML fallback converted to text."""
         plain_text = self._find_body_by_mime(payload, "text/plain")
         if plain_text:
-            return plain_text
+            return plain_text, False
 
         html_text = self._find_body_by_mime(payload, "text/html")
         if html_text:
-            return self._strip_html(html_text)
+            return self._strip_html(html_text), True
 
-        return ""
+        return "", False
+
+    def _count_attachments(self, payload: dict[str, Any]) -> int:
+        count = 0
+        for part in self._collect_all_parts(payload):
+            body = part.get("body", {}) or {}
+            filename = part.get("filename", "")
+            if filename or body.get("attachmentId"):
+                count += 1
+        return count
 
     def _find_body_by_mime(self, payload: dict[str, Any], target_mime: str) -> str | None:
         """Recursively scan MIME parts and decode body for a target content-type."""
@@ -313,6 +339,21 @@ class GmailClient:
         return None
 
     @staticmethod
+    def _header_values(headers: list[dict[str, str]]) -> dict[str, list[str]]:
+        values: dict[str, list[str]] = {}
+        for header in headers:
+            name = str(header.get("name", "")).strip().lower()
+            value = str(header.get("value", "")).strip()
+            if name and value:
+                values.setdefault(name, []).append(value)
+        return values
+
+    @staticmethod
+    def _first_header(headers: dict[str, list[str]], name: str, default: str = "") -> str:
+        values = headers.get(name, [])
+        return values[0] if values else default
+
+    @staticmethod
     def _decode_base64_to_text(data: str) -> str:
         """Decode URL-safe base64 string into UTF-8 text."""
         padding = "=" * (-len(data) % 4)
@@ -323,6 +364,8 @@ class GmailClient:
     def _strip_html(html_content: str) -> str:
         """Convert HTML content to normalized plain text."""
         soup = BeautifulSoup(html_content, "lxml")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
         return soup.get_text(separator="\n", strip=True)
 
     # ── PDF attachment extraction ───────────────────────────────
